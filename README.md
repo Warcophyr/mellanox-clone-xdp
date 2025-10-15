@@ -94,7 +94,7 @@ if (ctx->data_meta + sizeof(__u32) <= ctx->data) {
   }
 ```
 
-## Retun code fro the copy
+## Retun code for the copy
 packet with ID > 0 will only accept the default retun code
 
 ```C
