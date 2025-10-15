@@ -71,58 +71,7 @@ int xdp_clone(struct xdp_md *ctx) {
     // bpf_printk("XDP: UDP header validation failed\n");
     return XDP_PASS;
   }
-  // __u8 src_mac[ETH_ALEN];
-  // __u8 dst_mac[ETH_ALEN];
-  // __builtin_memcpy(src_mac, eth->h_source, ETH_ALEN);
-  // __builtin_memcpy(dst_mac, eth->h_dest, ETH_ALEN);
-  // __builtin_memcpy(eth->h_source, dst_mac, ETH_ALEN);
-  // __builtin_memcpy(eth->h_dest, src_mac, ETH_ALEN);
-  // // bpf_printk("ETH: src=%02x:%02x:%02x:%02x:%02x:%02x "
-  // //            "dst=%02x:%02x:%02x:%02x:%02x:%02x\n",
-  // //            eth->h_source[0], eth->h_source[1], eth->h_source[2],
-  // //            eth->h_source[3], eth->h_source[4], eth->h_source[5],
-  // //            eth->h_dest[0], eth->h_dest[1], eth->h_dest[2],
-  // //            eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
 
-  // __u32 saddr = iph->saddr;
-  // __u32 daddr = iph->daddr;
-  // __sum16 check = iph->check;
-  // __be16 id = iph->id;
-  // __be16 frag_off = iph->frag_off;
-  // __sum16 check_udp = udph->check;
-
-  // // bpf_printk("Received Source IP: 0x%x", bpf_ntohl(iph->saddr));
-  // // bpf_printk("Received Destination IP: 0x%x",
-  // // bpf_ntohl(iph->daddr));
-  // // bpf_printk("IP checksum: 0x%04x\n", __builtin_bswap16(check));
-  // // bpf_printk("IP ID: %u, Fragment offset + flags: 0x%x\n", id,
-  // // frag_off);
-
-  // __u32 new_daddr = bpf_ntohl(saddr);
-  // __u32 new_saddr = bpf_ntohl(daddr);
-  // iph->saddr = bpf_htonl(new_saddr);
-  // iph->daddr = bpf_htonl(new_daddr);
-  // // bpf_printk("Received Source IP: 0x%x", bpf_ntohl(iph->saddr));
-  // // bpf_printk("Received Destination IP: 0x%x",
-  // // bpf_ntohl(iph->daddr);
-
-  // // bpf_printk("UDP: sport=%d dport=%d len=%d\n",
-  // // bpf_ntohs(udph->source),
-  // //            bpf_ntohs(udph->dest), bpf_ntohs(udph->len));
-  // udph->dest = bpf_htons(5000);
-  // // udph->dest = 12346;
-  // // udph->check = 0;
-
-  // // iph->check = ip_checksum_xdp(iph);
-  // // bpf_printk("UDP: sport=%d dport=%d len=%d\n",
-  // // bpf_ntohs(udph->source),
-  // //            bpf_ntohs(udph->dest), bpf_ntohs(udph->len));
-
-  // udph->check = 0;
-  // iph->check = ip_checksum_xdp(iph);
-
-  // int claim = ctx->data_meta + sizeof(__u32) <= ctx->data;
-  // bpf_printk("data_meta: %d data: %d", ctx->data_meta, ctx->data);
   if (ctx->data_meta + sizeof(__u32) <= ctx->data) {
     int num_copy = 0;
     bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
