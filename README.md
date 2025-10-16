@@ -77,7 +77,7 @@ moidify apply to copy_i (with i < j)
 evry packet have a meta data to know if is a copy or not
 - not copy packet have ID = 0
 - copy packet have ID > 0
-- IDs are sequenze of Int if $\exists i>0 => \exists j=i-1 \land \exists! k=0$
+- IDs are sequenze of Int $\forall i>0 => \exists j=i-1 \land \exists! k=0 \space \land \not \exists j'=j$
 this rules are must be respect every time we do a clone
 - with this whe can also know at witch step of the copy we are
 
