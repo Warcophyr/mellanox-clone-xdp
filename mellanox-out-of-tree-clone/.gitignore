@@ -5,6 +5,7 @@
 *.idx
 *mod*
 !mod_hdr.h
+!mod_hdr.h
 *.json
 *.pcap
 *.symvers
