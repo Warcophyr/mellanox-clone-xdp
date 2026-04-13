@@ -1858,8 +1858,15 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           }
         } break;
         case XDP_TX: {
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
+          /* Increment core page pool reference count for this clone */
+          page_pool_ref_page(frag_page->page);
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+            // I need to decrement the refcnt of the page for each copy that is
+            // not passed or transmitted, otherwise I have a memory leak because
+            // the page will never be recycled and reused
+            page_pool_unref_page(frag_page->page, 1);
             goto xdp_clone_pass_abort_cpy;
+          }
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
           rcu_read_lock();
           mlx5e_xmit_xdp_doorbell(rq->xdpsq);
@@ -1897,10 +1904,10 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
         goto xdp_abort;
       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-      rcu_read_lock();
+      // rcu_read_lock();
       mlx5e_xmit_xdp_doorbell(rq->xdpsq);
       mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
-      rcu_read_unlock();
+      // rcu_read_unlock();
       u32 actcpy;
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
       metasize = mxbuf.xdp.data_meta - mxbuf.xdp.data;
@@ -1918,6 +1925,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         }
         switch (actcpy) {
         case XDP_PASS: {
+          // TODO: optimize by avoiding skb allocation when possible and reusing
+          // the same skb for all copies but Marco said that without this huge
+          // buffer the kernel crashes
           skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
           if (unlikely(!skbcpy)) {
             rq->stats->buff_alloc_err++;
@@ -1939,20 +1949,42 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
             if (mlx5e_cqe_regb_chain(cqe))
               if (!mlx5e_tc_update_skb_nic(cqe, skbcpy)) {
                 dev_kfree_skb_any(skbcpy);
-                goto xdp_clone_pass_exit;
+                goto xdp_clone_tx_exit;
               }
 
             napi_gro_receive(rq->cq.napi, skbcpy);
           }
         } break;
         case XDP_TX: {
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
+          /* Increment core page pool reference count for this clone */
+          page_pool_ref_page(frag_page->page);
+
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+
+            // I need to decrement the refcnt of the page for each copy that is
+            // not passed or transmitted, otherwise I have a memory leak because
+            // the page will never be recycled and reused
+            page_pool_unref_page(frag_page->page, 1);
             goto xdp_clone_tx_abort_cpy;
+          }
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-          rcu_read_lock();
+          // printk("pre_lock %d", i);
+          // rcu_read_lock();
+          // printk("pre_xmit %d", i);
+          // if (rq->xdpsq == NULL) {
+          //   printk("CIAO 1 %d\n", i);
+          // } else {
           mlx5e_xmit_xdp_doorbell(rq->xdpsq);
+          // }
+          // if (&rq->xdpsq->cq == NULL) {
+          //   printk("CIAO 2 %d\n", i);
+          // } else {
           mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
-          rcu_read_unlock();
+          // }
+          // printk("post_xmit %d", i);
+          // printk("post_poll %d", i);
+          // rcu_read_unlock();
+          // printk("post_lock %d", i);
         } break;
         case XDP_REDIRECT: {
           /* When XDP enabled then page-refcnt==1 here */

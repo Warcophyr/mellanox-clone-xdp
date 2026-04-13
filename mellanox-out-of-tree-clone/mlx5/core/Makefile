@@ -170,17 +170,21 @@ mlx5_dpll-y :=	dpll.o
 
 COMPILEDB = $(which compiledb)
 
-ETH := lo #loop back interface change of what interface you need
+ETH ?= enp52s0f1np1 #loop back interface change of what interface you need
+IP ?= 192.168.101.1
+
+KDIR ?= /lib/modules/$(shell uname -r)/build
 
 all:
-	$(MAKE) -j 20 -C /lib/modules/`uname -r`/build M=$(PWD) modules
+	$(MAKE) -j 20 -C $(KDIR) M=$(PWD) modules
 
 clean:
-	$(MAKE) -C /lib/modules/`uname -r`/build M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
 load: 
 	-sudo rmmod mlx5_ib
-	make reload
+	-sudo rmmod mlx5_fwctl
+	-make reload
 unload:
 	-sudo rmmod mlx5_core
 reset:
@@ -191,7 +195,7 @@ reload:
 	-sudo ip link set ${ETH} down
 	-sudo rmmod mlx5_core
 	-sudo insmod mlx5_core.ko
-	-sudo ip addr add dev ${ETH} 192.168.101.2/24
+	-sudo ip addr add dev ${ETH} ${IP}/24
 	-sudo ip link set ${ETH} up
 	-sudo ethtool --set-priv-flags ${ETH} rx_striding_rq off
 	-sudo ip link set ${ETH} promisc on
@@ -204,7 +208,7 @@ original:
 	-sudo ip link set ${ETH} down
 	-sudo rmmod mlx5_core
 	-sudo insmod mlx5_core.ko
-	-sudo ip addr add dev ${ETH} 192.168.101.2/24
+	-sudo ip addr add dev ${ETH} ${IP}/24
 	-sudo ip link set ${ETH} up
 	-sudo ip link set ${ETH} promisc on
 	# -sudo ethtool --set-rxfh-indir ${ETH} equal 1

@@ -5,9 +5,11 @@
 
 .PHONY: all reload load reset clean
 
+KDIR ?= /lib/modules/$(shell uname -r)/build
+
 all:
 	@echo "Building Mellanox device drivers..."
-	( cd ./mlx5/core; $(MAKE) )
+	( cd ./mlx5/core; $(MAKE) KDIR=$(KDIR) )
 
 reload:
 	@echo "Reloading Mellanox device drivers..."
@@ -15,7 +17,8 @@ reload:
 
 load:
 	@echo "Loading Mellanox device drivers..."
-	sudo rmmod mlx5_ib
+	-sudo rmmod mlx5_ib
+	-sudo rmmod mlx5_fwctl
 	( cd ./mlx5/core; $(MAKE) reload )
 
 reset:
@@ -24,4 +27,4 @@ reset:
 
 clean:
 	@echo "Cleaning Mellanox device drivers..."
-	( cd ./mlx5/core; $(MAKE) clean )
+	( cd ./mlx5/core; $(MAKE) KDIR=$(KDIR) clean )

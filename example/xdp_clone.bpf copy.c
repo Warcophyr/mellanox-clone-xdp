@@ -1,15 +1,14 @@
 // do not change the order of the include
 #define BPF_NO_GLOBAL_DATA
 #include <linux/bpf.h>
-
-#include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
 #include <linux/if_ether.h>
-#include <linux/if_xdp.h>
-#include <linux/in.h>
 #include <linux/ip.h>
-#include <linux/tcp.h>
 #include <linux/udp.h>
+#include <linux/tcp.h>
+#include <linux/in.h>
+#include <linux/if_xdp.h>
 
 #define __XDP_CLONE_PASS 5
 #define __XDP_CLONE_TX 6
@@ -42,49 +41,55 @@ int xdp_clone(struct xdp_md *ctx) {
   void *data_end = (void *)(long)ctx->data_end;
   void *data_meta = (void *)(long)ctx->data_meta;
 
+
+  
+  // bpf_printk("qui0\n");
+  // Basic packet validation
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end) {
+    bpf_printk("XDP: Ethernet header validation failed\n");
+    return XDP_PASS;
+  }
+
+  // Only process IP packets
+  if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
+    bpf_printk("XDP: Non-IP packet, passing through\n");
+    return XDP_PASS;
+  }
+
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end) {
+    bpf_printk("XDP: IP header validation failed\n");
+    return XDP_PASS;
+  }
+
+
+  // Only process UDP packets
+  if (iph->protocol != IPPROTO_UDP) {
+    return XDP_PASS;
+  }
+
+  __u32 ip_hdr_len = iph->ihl * 4;
+  struct udphdr *udph = (void *)iph + ip_hdr_len;
+  if ((void *)(udph + 1) > data_end) {
+    bpf_printk("XDP: UDP header validation failed\n");
+    return XDP_PASS;
+  }
+  bpf_printk("qui1\n");
+
+  if (bpf_ntohs(udph->dest) != 3) {
+    return XDP_PASS;
+  }
+
   if (ctx->data_meta + sizeof(__u32) <= ctx->data) {
-    // Basic packet validation
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end) {
-      // bpf_printk("XDP: Ethernet header validation failed\n");
-      return XDP_PASS;
-    }
-
-    // Only process IP packets
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
-      bpf_printk("XDP: Non-IP packet, passing through\n");
-      return XDP_PASS;
-    }
-
-    struct iphdr *iph = (void *)(eth + 1);
-    if ((void *)(iph + 1) > data_end) {
-      bpf_printk("XDP: IP header validation failed\n");
-      return XDP_PASS;
-    }
-
-    // Only process UDP packets
-    if (iph->protocol != IPPROTO_UDP) {
-      return XDP_PASS;
-    }
-
-    __u32 ip_hdr_len = iph->ihl * 4;
-    struct udphdr *udph = (void *)iph + ip_hdr_len;
-    if ((void *)(udph + 1) > data_end) {
-      bpf_printk("XDP: UDP header validation failed\n");
-      return XDP_PASS;
-    }
-    if (bpf_ntohs(udph->dest) != 3) {
-      return XDP_PASS;
-    }
-
     int num_copy = 0;
     bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
     __builtin_memcpy(&num_copy, data_meta, sizeof(num_copy));
     bpf_printk("num_copy: %d", num_copy);
     if (num_copy == 0) {
-      bpf_printk("TX");
-      return XDP_CLONE_TX(256);
+      return XDP_CLONE_TX(128);
     } else if (num_copy > 0) {
+      bpf_printk("qui2\n");
       // __u32 daddr = iph->daddr;
       // __u32 new_daddr = bpf_ntohl(daddr) + 1;
       // iph->daddr = bpf_htonl(new_daddr);
@@ -93,9 +98,9 @@ int xdp_clone(struct xdp_md *ctx) {
       // iph->check = ip_checksum_xdp(iph);
       return XDP_TX;
     }
-    return XDP_PASS;
+    // return XDP_PASS;
   }
-  return XDP_PASS;
+  return XDP_TX;
 }
 
 char LICENSE[] SEC("license") = "GPL";
