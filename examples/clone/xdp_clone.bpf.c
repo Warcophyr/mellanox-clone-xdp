@@ -82,12 +82,13 @@ int xdp_clone(struct xdp_md *ctx) {
     __builtin_memcpy(&num_copy, data_meta, sizeof(num_copy));
     bpf_printk("num_copy: %d", num_copy);
     if (num_copy == 0) {
-      bpf_printk("TX");
-      // return XDP_TX;
       unsigned char tmp[ETH_ALEN];
       __builtin_memcpy(tmp, eth->h_dest, ETH_ALEN);
       __builtin_memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
       __builtin_memcpy(eth->h_source, tmp, ETH_ALEN);
+
+      bpf_printk("TX");
+      // return XDP_TX;
       return XDP_CLONE_TX(3);
     } else if (num_copy > 0) {
       __u32 daddr = iph->daddr;

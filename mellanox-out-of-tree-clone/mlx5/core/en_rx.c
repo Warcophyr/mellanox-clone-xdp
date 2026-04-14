@@ -1959,8 +1959,21 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           /* Increment core page pool reference count for this clone */
           page_pool_ref_page(frag_page->page);
 
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+          struct page *copy_page = page_pool_dev_alloc_pages(rq->page_pool);
+          // if (!copy_page)
+          //   goto cleanup;
 
+          // Copy packet data to new buffer
+          void *copy_va = page_address(copy_page) + wi->offset;
+          memcpy(copy_va, va, rx_headroom + cqe_bcnt);
+
+          // Create new xdp_buff pointing to copied data
+          struct xdp_buff copy_xdp;
+          xdp_init_buff(&copy_xdp, rq->buff.frame0_sz, &rq->xdp_rxq);
+          xdp_prepare_buff(&copy_xdp, copy_va, rx_headroom, cqe_bcnt, true);
+
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp))) {
+            page_pool_put_page(rq->page_pool, copy_page, 0, true);
             // I need to decrement the refcnt of the page for each copy that is
             // not passed or transmitted, otherwise I have a memory leak because
             // the page will never be recycled and reused
@@ -1979,7 +1992,10 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           // if (&rq->xdpsq->cq == NULL) {
           //   printk("CIAO 2 %d\n", i);
           // } else {
+          // TODO: add while for polling the cq to avoid missing completions
+          // when there are many packets in flight
           mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
+          // mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
           // }
           // printk("post_xmit %d", i);
           // printk("post_poll %d", i);
