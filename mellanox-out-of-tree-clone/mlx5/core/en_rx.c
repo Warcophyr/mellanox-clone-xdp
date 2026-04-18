@@ -1901,8 +1901,11 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     }
     case XDP_CLONE_TX: {
       mxbuf.xdp.data_meta = va + rx_headroom;
-      if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
+      page_pool_ref_page(frag_page->page);
+      if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+        page_pool_unref_page(frag_page->page, 1);
         goto xdp_abort;
+      }
       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
       // rcu_read_lock();
       mlx5e_xmit_xdp_doorbell(rq->xdpsq);
@@ -1956,12 +1959,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           }
         } break;
         case XDP_TX: {
-          /* Increment core page pool reference count for this clone */
-          page_pool_ref_page(frag_page->page);
-
           struct page *copy_page = page_pool_dev_alloc_pages(rq->page_pool);
-          // if (!copy_page)
-          //   goto cleanup;
+          if (unlikely(!copy_page))
+            goto xdp_clone_tx_abort_cpy;
 
           // Copy packet data to new buffer
           void *copy_va = page_address(copy_page) + wi->offset;
@@ -1974,10 +1974,6 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
           if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp))) {
             page_pool_put_page(rq->page_pool, copy_page, 0, true);
-            // I need to decrement the refcnt of the page for each copy that is
-            // not passed or transmitted, otherwise I have a memory leak because
-            // the page will never be recycled and reused
-            page_pool_unref_page(frag_page->page, 1);
             goto xdp_clone_tx_abort_cpy;
           }
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
@@ -2025,6 +2021,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         }
       }
     xdp_clone_tx_exit:
+      page_pool_unref_page(frag_page->page, 1);
       return NULL;
     }
     case XDP_PASS:
