@@ -17,6 +17,8 @@
   (((int)(num_copy) << 5) | (int)__XDP_CLONE_PASS)
 #define XDP_CLONE_TX(num_copy) (((int)(num_copy) << 5) | (int)__XDP_CLONE_TX)
 
+__u64 n_clone = 4;
+
 static __always_inline __u16 ip_checksum_xdp(struct iphdr *ip) {
   __u32 sum = 0;
   __u16 *data = (__u16 *)ip;
@@ -46,7 +48,7 @@ int xdp_clone(struct xdp_md *ctx) {
     // Basic packet validation
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) {
-      // bpf_printk("XDP: Ethernet header validation failed\n");
+      bpf_printk("XDP: Ethernet header validation failed\n");
       return XDP_PASS;
     }
 
@@ -78,18 +80,18 @@ int xdp_clone(struct xdp_md *ctx) {
     }
 
     int num_copy = 0;
-    bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
+    //bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
     __builtin_memcpy(&num_copy, data_meta, sizeof(num_copy));
-    bpf_printk("num_copy: %d", num_copy);
+    //bpf_printk("num_copy: %d", num_copy);
     if (num_copy == 0) {
       unsigned char tmp[ETH_ALEN];
       __builtin_memcpy(tmp, eth->h_dest, ETH_ALEN);
       __builtin_memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
       __builtin_memcpy(eth->h_source, tmp, ETH_ALEN);
 
-      bpf_printk("TX");
+      //bpf_printk("TX");
       // return XDP_TX;
-      return XDP_CLONE_TX(3);
+      return XDP_CLONE_TX(n_clone);
     } else if (num_copy > 0) {
       __u32 daddr = iph->daddr;
       __u32 new_daddr = bpf_ntohl(daddr) + 1;

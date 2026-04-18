@@ -11,13 +11,25 @@
 #include <linux/tcp.h>
 #include <linux/udp.h>
 
+// #ifdef DEBUG
+// #define bpf_printk(fmt, ...) \
+//   ({ \
+//     char ____fmt[] = fmt; \
+//     bpf_trace_printk(____fmt, sizeof(____fmt), ##__VA_ARGS__); \
+//   })
+// #else
+// #define bpf_printk(fmt, ...) ({})
+// #endif
+
 #define __XDP_CLONE_PASS 5
 #define __XDP_CLONE_TX 6
 #define XDP_CLONE_PASS(num_copy)                                               \
   (((int)(num_copy) << 5) | (int)__XDP_CLONE_PASS)
 #define XDP_CLONE_TX(num_copy) (((int)(num_copy) << 5) | (int)__XDP_CLONE_TX)
 
-static __always_inline __u16 ip_checksum_xdp(struct iphdr *ip) {
+__u64 n_clone = 4;
+
+static __always_inline __u16 ip_checksum(struct iphdr *ip) {
   __u32 sum = 0;
   __u16 *data = (__u16 *)ip;
 
@@ -46,13 +58,13 @@ int xdp_clone(struct xdp_md *ctx) {
     // Basic packet validation
     struct ethhdr *eth = data;
     if ((void *)(eth + 1) > data_end) {
-      // bpf_printk("XDP: Ethernet header validation failed\n");
+      bpf_printk("XDP: Ethernet header validation failed\n");
       return XDP_PASS;
     }
 
     // Only process IP packets
     if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
-      bpf_printk("XDP: Non-IP packet, passing through\n");
+      // bpf_printk("XDP: Non-IP packet, passing through");
       return XDP_PASS;
     }
 
@@ -78,24 +90,25 @@ int xdp_clone(struct xdp_md *ctx) {
     }
 
     int num_copy = 0;
-    bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
+    // bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
     __builtin_memcpy(&num_copy, data_meta, sizeof(num_copy));
-    bpf_printk("num_copy: %d", num_copy);
+    // bpf_printk("num_copy: %d", num_copy);
     if (num_copy == 0) {
-      bpf_printk("TX");
-      // return XDP_TX;
       unsigned char tmp[ETH_ALEN];
       __builtin_memcpy(tmp, eth->h_dest, ETH_ALEN);
       __builtin_memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
       __builtin_memcpy(eth->h_source, tmp, ETH_ALEN);
-      return XDP_CLONE_TX(3);
+
+      // bpf_printk("TX");
+      //  return XDP_TX;
+      return XDP_CLONE_TX(n_clone);
     } else if (num_copy > 0) {
       __u32 daddr = iph->daddr;
       __u32 new_daddr = bpf_ntohl(daddr) + 1;
       iph->daddr = bpf_htonl(new_daddr);
 
       udph->check = 0;
-      iph->check = ip_checksum_xdp(iph);
+      iph->check = ip_checksum(iph);
       return XDP_TX;
     }
     return XDP_PASS;

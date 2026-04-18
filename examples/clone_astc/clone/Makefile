@@ -2,12 +2,11 @@ TARGET := xdp_clone
 
 .PHONY : all clean
 
-DEBUG ?= 0
-
 all:
-	clang -g -O2 --target=bpf -c $(TARGET).bpf.c -o $(TARGET).bpf.o -I ./kernel_module -DDEBUG=$(DEBUG)
+	clang -g -O2 --target=bpf -c $(TARGET).bpf.c -o $(TARGET).bpf.o -I ./kernel_module
 	bpftool gen skeleton $(TARGET).bpf.o > $(TARGET).bpf.skel.h
 	gcc -g -O2 -o $(TARGET) $(TARGET).c -lbpf
+
 
 clean:
 	rm -f $(TARGET) $(TARGET:=.bpf.o) $(TARGET:=.bpf.skel.h)

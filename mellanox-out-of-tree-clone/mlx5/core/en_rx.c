@@ -1906,7 +1906,11 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
       // rcu_read_lock();
       mlx5e_xmit_xdp_doorbell(rq->xdpsq);
-      mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
+      // Poll until all packets are consumed by NIC
+      while (rq->xdpsq->cc < rq->xdpsq->pc) {
+        if (!mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq))
+          cpu_relax(); // Busy loop - CPU yields briefly
+      }
       // rcu_read_unlock();
       u32 actcpy;
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
@@ -1959,21 +1963,22 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           /* Increment core page pool reference count for this clone */
           page_pool_ref_page(frag_page->page);
 
-          struct page *copy_page = page_pool_dev_alloc_pages(rq->page_pool);
-          // if (!copy_page)
-          //   goto cleanup;
+          // struct page *copy_page = page_pool_dev_alloc_pages(rq->page_pool);
+          // // if (!copy_page)
+          // //   goto cleanup;
 
-          // Copy packet data to new buffer
-          void *copy_va = page_address(copy_page) + wi->offset;
-          memcpy(copy_va, va, rx_headroom + cqe_bcnt);
+          // // Copy packet data to new buffer
+          // void *copy_va = page_address(copy_page) + wi->offset;
+          // memcpy(copy_va, va, rx_headroom + cqe_bcnt);
 
-          // Create new xdp_buff pointing to copied data
-          struct xdp_buff copy_xdp;
-          xdp_init_buff(&copy_xdp, rq->buff.frame0_sz, &rq->xdp_rxq);
-          xdp_prepare_buff(&copy_xdp, copy_va, rx_headroom, cqe_bcnt, true);
+          // // Create new xdp_buff pointing to copied data
+          // struct xdp_buff copy_xdp;
+          // xdp_init_buff(&copy_xdp, rq->buff.frame0_sz, &rq->xdp_rxq);
+          // xdp_prepare_buff(&copy_xdp, copy_va, rx_headroom, cqe_bcnt, true);
 
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp))) {
-            page_pool_put_page(rq->page_pool, copy_page, 0, true);
+          // if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp))) {
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+            // page_pool_put_page(rq->page_pool, copy_page, 0, true);
             // I need to decrement the refcnt of the page for each copy that is
             // not passed or transmitted, otherwise I have a memory leak because
             // the page will never be recycled and reused
@@ -1981,26 +1986,14 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
             goto xdp_clone_tx_abort_cpy;
           }
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-          // printk("pre_lock %d", i);
-          // rcu_read_lock();
-          // printk("pre_xmit %d", i);
-          // if (rq->xdpsq == NULL) {
-          //   printk("CIAO 1 %d\n", i);
-          // } else {
+                                                        // rcu_read_lock();
           mlx5e_xmit_xdp_doorbell(rq->xdpsq);
-          // }
-          // if (&rq->xdpsq->cq == NULL) {
-          //   printk("CIAO 2 %d\n", i);
-          // } else {
-          // TODO: add while for polling the cq to avoid missing completions
-          // when there are many packets in flight
-          mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
-          // mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
-          // }
-          // printk("post_xmit %d", i);
-          // printk("post_poll %d", i);
+          // Poll until all packets are consumed by NIC
+          while (rq->xdpsq->cc < rq->xdpsq->pc) {
+            if (!mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq))
+              cpu_relax(); // Busy loop - CPU yields briefly
+          }
           // rcu_read_unlock();
-          // printk("post_lock %d", i);
         } break;
         case XDP_REDIRECT: {
           /* When XDP enabled then page-refcnt==1 here */

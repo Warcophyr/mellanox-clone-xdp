@@ -5,6 +5,7 @@
 #include "xdp_clone.bpf.skel.h"
 
 int if_index;
+int n_clone = 4;
 struct xdp_clone_bpf *xdp_clone;
 
 void sig_handler(int sig) {
@@ -28,7 +29,7 @@ int main(int argc, char **argv) {
 
   int err;
   if (argc < 2) {
-    fprintf(stderr, "Usage: %s <ifname>\n", argv[0]);
+    fprintf(stderr, "Usage: %s <ifname> [n clones]\n", argv[0]);
     return 1;
   }
 
@@ -46,6 +47,12 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Failed to get ifindex of %s\n", argv[1]);
     return 1;
   }
+
+  if (argc == 3)
+    n_clone = atoi(argv[2]);
+
+  xdp_clone->data->n_clone = n_clone;
+
   err = bpf_xdp_attach(if_index, bpf_program__fd(xdp_clone->progs.xdp_clone), 0,
                        NULL);
   if (err) {
