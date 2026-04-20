@@ -1745,13 +1745,11 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
   void *va, *data;
   dma_addr_t addr;
   u32 frag_size;
-  u16 *metadata;
   const int XDP_CLONE_PASS = 5;
   const int XDP_CLONE_TX = 6;
 
   va = page_address(frag_page->page) + wi->offset;
   data = va + rx_headroom;
-  metadata = (va + rx_headroom) - sizeof(struct napi_struct);
   frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
 
   addr = page_pool_get_dma_addr(frag_page->page);
@@ -1769,25 +1767,36 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     struct xdp_buff *xdp = &(mxbuf.xdp);
     u32 act;
     int err;
+    int num_copy = 0;
     cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
 
-    int x = 0;
-    __builtin_memcpy(mxbuf.xdp.data_meta, &x, sizeof(x));
-
+    /* Original packets must start with no metadata visible to BPF. */
+    mxbuf.xdp.data_meta = xdp->data;
     act = bpf_prog_run_xdp(prog, xdp);
-    mxbuf.xdp.data_meta = va;
-    int num_copy = 0;
     if (act > 4) {
       int __num_copy = act >> 5;
       int __xdp_clone = (act & 0x1F);
       num_copy = __num_copy >= 0 ? __num_copy : 0;
       act = __xdp_clone;
     }
+
+    if (act == XDP_CLONE_PASS || act == XDP_CLONE_TX) {
+      if (unlikely((size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
+                   sizeof(num_copy))) {
+        act = XDP_ABORTED;
+      } else {
+        mxbuf.xdp.data_meta = xdp->data - sizeof(num_copy);
+        __builtin_memcpy(mxbuf.xdp.data_meta, &num_copy, sizeof(num_copy));
+      }
+    } else {
+      mxbuf.xdp.data_meta = xdp->data;
+    }
+
     switch (act) {
     case XDP_CLONE_PASS: {
       u32 actcpy;
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
-      metasize = mxbuf.xdp.data_meta - mxbuf.xdp.data;
+      metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
       skb = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
@@ -1820,11 +1829,16 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       }
       struct sk_buff *skbcpy;
       for (int i = 0; i < num_copy; i++) {
-        mxbuf.xdp.data_meta = va;
         int __num_copy = i + 1;
+        if (unlikely((size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
+                     sizeof(__num_copy))) {
+          actcpy = XDP_ABORTED;
+          goto xdp_clone_pass_abort_cpy;
+        }
+        mxbuf.xdp.data_meta = xdp->data - sizeof(__num_copy);
         __builtin_memcpy(mxbuf.xdp.data_meta, &__num_copy, sizeof(__num_copy));
         actcpy = bpf_prog_run_xdp(prog, xdp);
-        mxbuf.xdp.data_meta = va + rx_headroom;
+        mxbuf.xdp.data_meta = xdp->data;
         if (actcpy > 4) {
           goto xdp_clone_pass_abort_cpy;
         }
@@ -1900,7 +1914,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       return NULL;
     }
     case XDP_CLONE_TX: {
-      mxbuf.xdp.data_meta = va + rx_headroom;
+      mxbuf.xdp.data_meta = xdp->data;
       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
         goto xdp_abort;
       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
@@ -1914,16 +1928,21 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       // rcu_read_unlock();
       u32 actcpy;
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
-      metasize = mxbuf.xdp.data_meta - mxbuf.xdp.data;
+      metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
       struct sk_buff *skbcpy;
       for (int i = 0; i < num_copy; i++) {
-        mxbuf.xdp.data_meta = va;
         int __num_copy = i + 1;
+        if (unlikely((size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
+                     sizeof(__num_copy))) {
+          actcpy = XDP_ABORTED;
+          goto xdp_clone_tx_abort_cpy;
+        }
+        mxbuf.xdp.data_meta = xdp->data - sizeof(__num_copy);
         __builtin_memcpy(mxbuf.xdp.data_meta, &__num_copy, sizeof(__num_copy));
         actcpy = bpf_prog_run_xdp(prog, xdp);
-        mxbuf.xdp.data_meta = va + rx_headroom;
+        mxbuf.xdp.data_meta = xdp->data;
         if (actcpy > 4) {
           goto xdp_clone_tx_abort_cpy;
         }
@@ -2022,7 +2041,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     }
     case XDP_PASS:
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
-      metasize = mxbuf.xdp.data_meta - mxbuf.xdp.data;
+      metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
       skb = mlx5e_build_linear_skb(rq, va, frag_size, rx_headroom, cqe_bcnt,
