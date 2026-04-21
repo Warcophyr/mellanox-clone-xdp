@@ -103,7 +103,7 @@ int xdp_clone(struct xdp_md *ctx) {
       //  return XDP_TX;
     } else if (num_copy > 0) {
       __u32 daddr = iph->daddr;
-      __u32 new_daddr = bpf_ntohl(daddr) + 1;
+      __u32 new_daddr = bpf_ntohl(daddr) + num_copy;
       iph->daddr = bpf_htonl(new_daddr);
       udph->check = 0;
       iph->check = ip_checksum(iph);

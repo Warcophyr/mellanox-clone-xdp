@@ -29,25 +29,6 @@
 
 __u64 n_clone = 4;
 
-static __always_inline __u16 ip_checksum(struct iphdr *ip) {
-  __u32 sum = 0;
-  __u16 *data = (__u16 *)ip;
-
-// IP header is guaranteed to be at least 20 bytes, so 10 16-bit words
-#pragma unroll
-  for (int i = 0; i < 10; i++) {
-    if (i == 5)
-      continue; // Skip checksum field
-    sum += bpf_ntohs(data[i]);
-  }
-
-  // Add carry
-  while (sum >> 16)
-    sum = (sum & 0xFFFF) + (sum >> 16);
-
-  return bpf_htons(~sum);
-}
-
 SEC("xdp")
 int xdp_clone(struct xdp_md *ctx) {
   void *data = (void *)(long)ctx->data;
@@ -55,67 +36,55 @@ int xdp_clone(struct xdp_md *ctx) {
   void *data_meta = (void *)(long)ctx->data_meta;
 
   if (ctx->data_meta + sizeof(__u32) <= ctx->data) {
-    // Basic packet validation
-    struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end) {
-      bpf_printk("XDP: Ethernet header validation failed\n");
-      return XDP_PASS;
-    }
+    __u32 num_copy = 0;
+    // __builtin_memcpy(&num_copy, data_meta, sizeof(num_copy));
+    num_copy = *(__u32 *)data_meta;
 
-    // Only process IP packets
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
-      // bpf_printk("XDP: Non-IP packet, passing through");
-      return XDP_PASS;
-    }
-
-    struct iphdr *iph = (void *)(eth + 1);
-    if ((void *)(iph + 1) > data_end) {
-      bpf_printk("XDP: IP header validation failed\n");
-      return XDP_PASS;
-    }
-
-    // Only process UDP packets
-    if (iph->protocol != IPPROTO_UDP) {
-      return XDP_PASS;
-    }
-
-    __u32 ip_hdr_len = iph->ihl * 4;
-    struct udphdr *udph = (void *)iph + ip_hdr_len;
-    if ((void *)(udph + 1) > data_end) {
-      bpf_printk("XDP: UDP header validation failed\n");
-      return XDP_PASS;
-    }
-    if (bpf_ntohs(udph->dest) != 3) {
-      return XDP_PASS;
-    }
-
-    int num_copy = 0;
-    // bpf_printk("ip: %lu", bpf_ntohl(iph->saddr));
-    __builtin_memcpy(&num_copy, data_meta, sizeof(num_copy));
-    // bpf_printk("num_copy: %d", num_copy);
-    if (num_copy == 0) {
-      unsigned char tmp[ETH_ALEN];
-      __builtin_memcpy(tmp, eth->h_dest, ETH_ALEN);
-      __builtin_memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
-      __builtin_memcpy(eth->h_source, tmp, ETH_ALEN);
-
-      // bpf_printk("TX");
-      //  return XDP_TX;
-      return XDP_CLONE_TX(n_clone);
-    } else if (num_copy > 0) {
-      __u32 daddr = iph->daddr;
-      __u32 new_daddr = bpf_ntohl(daddr) + 1;
-      iph->daddr = bpf_htonl(new_daddr);
-
-      udph->check = 0;
-      iph->check = ip_checksum(iph);
+    /* Consider valid metadata only for actual clone copies. */
+    if (num_copy > 0 && num_copy <= n_clone) {
+      bpf_printk("copia num_copy: %u\n", num_copy);
       return XDP_TX;
     }
-    return XDP_PASS;
+    bpf_printk("errore num_copy: %u\n", num_copy);
   }
 
-  bpf_printk("XDP: Packet too small for metadata, passing through\n");
-  return XDP_TX;
+  // Basic packet validation (original packet without metadata)
+  struct ethhdr *eth = data;
+  if ((void *)(eth + 1) > data_end) {
+    // bpf_printk("XDP: Ethernet header validation failed\n");
+    return XDP_DROP;
+  }
+
+  // Only process IP packets
+  if (bpf_ntohs(eth->h_proto) != ETH_P_IP) {
+    // bpf_printk("XDP: IPv4 header validation failed\n");
+    return XDP_DROP;
+  }
+
+  struct iphdr *iph = (void *)(eth + 1);
+  if ((void *)(iph + 1) > data_end) {
+    // bpf_printk("XDP: IP header validation failed\n");
+    return XDP_DROP;
+  }
+
+  // Only process UDP packets
+  if (iph->protocol != IPPROTO_UDP) {
+    return XDP_DROP;
+  }
+
+  __u32 ip_hdr_len = iph->ihl * 4;
+  struct udphdr *udph = (void *)iph + ip_hdr_len;
+  if ((void *)(udph + 1) > data_end) {
+    // bpf_printk("XDP: UDP header validation failed\n");
+    return XDP_DROP;
+  }
+  if (bpf_ntohs(udph->dest) != 8901) {
+    // bpf_printk("XDP: UDP destination port validation failed\n");
+    return XDP_DROP;
+  }
+
+  bpf_printk("XDP: Cloning packet, num_copy: %u\n", n_clone);
+  return XDP_CLONE_TX(n_clone);
 }
 
 char LICENSE[] SEC("license") = "GPL";

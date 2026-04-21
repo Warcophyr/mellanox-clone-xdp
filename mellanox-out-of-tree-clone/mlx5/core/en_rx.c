@@ -1773,6 +1773,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     /* Original packets must start with no metadata visible to BPF. */
     mxbuf.xdp.data_meta = xdp->data;
     act = bpf_prog_run_xdp(prog, xdp);
+    // printk("XDP action: %d\n", act);
     if (act > 4) {
       int __num_copy = act >> 5;
       int __xdp_clone = (act & 0x1F);
@@ -1830,8 +1831,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       struct sk_buff *skbcpy;
       for (int i = 0; i < num_copy; i++) {
         int __num_copy = i + 1;
-        if (unlikely((size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
-                     sizeof(__num_copy))) {
+        if (unlikely(
+                (size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
+                sizeof(__num_copy))) {
           actcpy = XDP_ABORTED;
           goto xdp_clone_pass_abort_cpy;
         }
@@ -1918,39 +1920,51 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
         goto xdp_abort;
       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-      // rcu_read_lock();
-      mlx5e_xmit_xdp_doorbell(rq->xdpsq);
-      // Poll until all packets are consumed by NIC
-      while (rq->xdpsq->cc < rq->xdpsq->pc) {
-        if (!mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq))
-          cpu_relax(); // Busy loop - CPU yields briefly
-      }
-      // rcu_read_unlock();
       u32 actcpy;
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
       metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
       struct sk_buff *skbcpy;
+      struct page *page[num_copy];
+      void *copy_va[num_copy];
+      struct xdp_buff copy_xdp[num_copy];
+
+      for (int i = 0; i < num_copy; i++) {
+
+        page[i] = page_pool_dev_alloc_pages(rq->page_pool);
+        if (!page[i])
+          goto xdp_clone_tx_abort_cpy;
+
+        // Copy packet data to new buffer
+        copy_va[i] = page_address(page[i]);
+        __builtin_memcpy(copy_va[i], va, rx_headroom + cqe_bcnt);
+
+        // Create new xdp_buff pointing to copied data
+        xdp_init_buff(&copy_xdp[i], rq->buff.frame0_sz, &rq->xdp_rxq);
+        xdp_prepare_buff(&copy_xdp[i], copy_va[i], rx_headroom, cqe_bcnt, true);
+      }
       for (int i = 0; i < num_copy; i++) {
         int __num_copy = i + 1;
-        if (unlikely((size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
-                     sizeof(__num_copy))) {
+        if (unlikely(
+                (size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
+                sizeof(__num_copy))) {
           actcpy = XDP_ABORTED;
           goto xdp_clone_tx_abort_cpy;
         }
-        mxbuf.xdp.data_meta = xdp->data - sizeof(__num_copy);
-        __builtin_memcpy(mxbuf.xdp.data_meta, &__num_copy, sizeof(__num_copy));
-        actcpy = bpf_prog_run_xdp(prog, xdp);
-        mxbuf.xdp.data_meta = xdp->data;
+        copy_xdp[i].data_meta = copy_xdp[i].data - sizeof(__num_copy);
+        __builtin_memcpy(copy_xdp[i].data_meta, &__num_copy,
+                         sizeof(__num_copy));
+        actcpy = bpf_prog_run_xdp(prog, &copy_xdp[i]);
+        copy_xdp[i].data_meta = copy_xdp[i].data;
         if (actcpy > 4) {
           goto xdp_clone_tx_abort_cpy;
         }
         switch (actcpy) {
         case XDP_PASS: {
-          // TODO: optimize by avoiding skb allocation when possible and reusing
-          // the same skb for all copies but Marco said that without this huge
-          // buffer the kernel crashes
+          // TODO: optimize by avoiding skb allocation when possible and
+          // reusing the same skb for all copies but Marco said that
+          // without this huge buffer the kernel crashes
           skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
           if (unlikely(!skbcpy)) {
             rq->stats->buff_alloc_err++;
@@ -1979,40 +1993,12 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           }
         } break;
         case XDP_TX: {
-          /* Increment core page pool reference count for this clone */
-          page_pool_ref_page(frag_page->page);
-
-          // struct page *copy_page = page_pool_dev_alloc_pages(rq->page_pool);
-          // // if (!copy_page)
-          // //   goto cleanup;
-
-          // // Copy packet data to new buffer
-          // void *copy_va = page_address(copy_page) + wi->offset;
-          // memcpy(copy_va, va, rx_headroom + cqe_bcnt);
-
-          // // Create new xdp_buff pointing to copied data
-          // struct xdp_buff copy_xdp;
-          // xdp_init_buff(&copy_xdp, rq->buff.frame0_sz, &rq->xdp_rxq);
-          // xdp_prepare_buff(&copy_xdp, copy_va, rx_headroom, cqe_bcnt, true);
-
-          // if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp))) {
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
-            // page_pool_put_page(rq->page_pool, copy_page, 0, true);
-            // I need to decrement the refcnt of the page for each copy that is
-            // not passed or transmitted, otherwise I have a memory leak because
-            // the page will never be recycled and reused
-            page_pool_unref_page(frag_page->page, 1);
+          // page_pool_ref_page(frag_page->page);
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp[i]))) {
+            page_pool_unref_page(page[i], 1);
             goto xdp_clone_tx_abort_cpy;
           }
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-                                                        // rcu_read_lock();
-          mlx5e_xmit_xdp_doorbell(rq->xdpsq);
-          // Poll until all packets are consumed by NIC
-          while (rq->xdpsq->cc < rq->xdpsq->pc) {
-            if (!mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq))
-              cpu_relax(); // Busy loop - CPU yields briefly
-          }
-          // rcu_read_unlock();
         } break;
         case XDP_REDIRECT: {
           /* When XDP enabled then page-refcnt==1 here */
