@@ -30,35 +30,35 @@
  * SOFTWARE.
  */
 
+#include "devlink.h"
+#include "en.h"
+#include "en/devlink.h"
+#include "en/health.h"
+#include "en/params.h"
+#include "en/rep/tc.h"
+#include "en/txrx.h"
+#include "en/xdp.h"
+#include "en/xsk/rx.h"
+#include "en_accel/ipsec.h"
+#include "en_accel/ipsec_rxtx.h"
+#include "en_accel/ktls_txrx.h"
+#include "en_accel/macsec.h"
+#include "en_rep.h"
+#include "en_tc.h"
+#include "eswitch.h"
+#include "ipoib/ipoib.h"
+#include <linux/bitmap.h>
+#include <linux/filter.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
-#include <linux/bitmap.h>
-#include <linux/filter.h>
+#include <net/gro.h>
+#include <net/inet_ecn.h>
 #include <net/ip6_checksum.h>
 #include <net/page_pool/helpers.h>
-#include <net/inet_ecn.h>
-#include <net/gro.h>
-#include <net/udp.h>
 #include <net/tcp.h>
+#include <net/udp.h>
 #include <net/xdp_sock_drv.h>
-#include "en.h"
-#include "en/txrx.h"
-#include "en_tc.h"
-#include "eswitch.h"
-#include "en_rep.h"
-#include "en/rep/tc.h"
-#include "ipoib/ipoib.h"
-#include "en_accel/ipsec.h"
-#include "en_accel/macsec.h"
-#include "en_accel/ipsec_rxtx.h"
-#include "en_accel/ktls_txrx.h"
-#include "en/xdp.h"
-#include "en/xsk/rx.h"
-#include "en/health.h"
-#include "en/params.h"
-#include "devlink.h"
-#include "en/devlink.h"
 
 #include <linux/bpf_trace.h>
 #include <linux/btf.h>
@@ -1917,54 +1917,96 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     }
     case XDP_CLONE_TX: {
       mxbuf.xdp.data_meta = xdp->data;
+
+      /* TX del pacchetto originale */
       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
         goto xdp_abort;
-      __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-      u32 actcpy;
+
+      __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
+
+      /* Precompute */
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
       metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
-      frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
-      struct sk_buff *skbcpy;
-      struct page *page[num_copy];
+
+      const u32 total_len = rx_headroom + cqe_bcnt;
+
+      struct page *pages[num_copy];
       void *copy_va[num_copy];
       struct xdp_buff copy_xdp[num_copy];
 
-      for (int i = 0; i < num_copy; i++) {
+      int i;
 
-        page[i] = page_pool_dev_alloc_pages(rq->page_pool);
-        if (!page[i])
+      /* =========================
+       * 1. BATCH ALLOCATION
+       * ========================= */
+      for (i = 0; i < num_copy; i++) {
+        pages[i] = page_pool_dev_alloc_pages(rq->page_pool);
+        if (unlikely(!pages[i]))
           goto xdp_clone_tx_abort_cpy;
+      }
 
-        // Copy packet data to new buffer
-        copy_va[i] = page_address(page[i]);
-        __builtin_memcpy(copy_va[i], va, rx_headroom + cqe_bcnt);
+      /* =========================
+       * 2. PREFETCH DESTINATION
+       * ========================= */
+      for (i = 0; i < num_copy; i++) {
+        copy_va[i] = page_address(pages[i]);
+        prefetchw(copy_va[i]);
+      }
 
-        // Create new xdp_buff pointing to copied data
+      /* =========================
+       * 3. TIGHT COPY LOOP
+       * ========================= */
+      for (i = 0; i < num_copy; i++) {
+        memcpy(copy_va[i], va, total_len);
+      }
+
+      /* =========================
+       * 4. INIT XDP BUFFERS
+       * ========================= */
+      for (i = 0; i < num_copy; i++) {
         xdp_init_buff(&copy_xdp[i], rq->buff.frame0_sz, &rq->xdp_rxq);
+
         xdp_prepare_buff(&copy_xdp[i], copy_va[i], rx_headroom, cqe_bcnt, true);
       }
-      for (int i = 0; i < num_copy; i++) {
+
+      /* =========================
+       * 5. PROCESS CLONES
+       * ========================= */
+      for (i = 0; i < num_copy; i++) {
+        u32 actcpy;
         int __num_copy = i + 1;
-        if (unlikely(
-                (size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
-                sizeof(__num_copy))) {
+
+        if (unlikely((size_t)((char *)copy_xdp[i].data -
+                              (char *)copy_xdp[i].data_hard_start) <
+                     sizeof(__num_copy))) {
           actcpy = XDP_ABORTED;
           goto xdp_clone_tx_abort_cpy;
         }
+
+        /* metadata write (piccolo, cache-friendly) */
         copy_xdp[i].data_meta = copy_xdp[i].data - sizeof(__num_copy);
-        __builtin_memcpy(copy_xdp[i].data_meta, &__num_copy,
-                         sizeof(__num_copy));
+        *(int *)copy_xdp[i].data_meta = __num_copy;
+
         actcpy = bpf_prog_run_xdp(prog, &copy_xdp[i]);
+
         copy_xdp[i].data_meta = copy_xdp[i].data;
-        if (actcpy > 4) {
+
+        if (unlikely(actcpy > 4))
           goto xdp_clone_tx_abort_cpy;
-        }
+
         switch (actcpy) {
+        case XDP_TX:
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp[i]))) {
+            page_pool_unref_page(pages[i], 1);
+            goto xdp_clone_tx_abort_cpy;
+          }
+          __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
+          break;
+
         case XDP_PASS: {
-          // TODO: optimize by avoiding skb allocation when possible and
-          // reusing the same skb for all copies but Marco said that
-          // without this huge buffer the kernel crashes
+          struct sk_buff *skbcpy;
+
           skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
           if (unlikely(!skbcpy)) {
             rq->stats->buff_alloc_err++;
@@ -1972,57 +2014,54 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           }
 
           skb_reserve(skbcpy, rx_headroom);
-          skb_put_data(skbcpy, data, cqe_bcnt);
+          skb_put_data(skbcpy, copy_xdp[i].data, cqe_bcnt);
 
           if (metasize)
             skb_metadata_set(skbcpy, metasize);
 
-          /* queue up for recycling/reuse */
           skb_mark_for_recycle(skbcpy);
-          if (skbcpy) {
 
-            mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skbcpy);
+          mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skbcpy);
 
-            if (mlx5e_cqe_regb_chain(cqe))
-              if (!mlx5e_tc_update_skb_nic(cqe, skbcpy)) {
-                dev_kfree_skb_any(skbcpy);
-                goto xdp_clone_tx_exit;
-              }
+          if (mlx5e_cqe_regb_chain(cqe))
+            if (!mlx5e_tc_update_skb_nic(cqe, skbcpy)) {
+              dev_kfree_skb_any(skbcpy);
+              goto xdp_clone_tx_exit;
+            }
 
-            napi_gro_receive(rq->cq.napi, skbcpy);
-          }
-        } break;
-        case XDP_TX: {
-          // page_pool_ref_page(frag_page->page);
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp[i]))) {
-            page_pool_unref_page(page[i], 1);
+          napi_gro_receive(rq->cq.napi, skbcpy);
+          break;
+        }
+
+        case XDP_REDIRECT:
+          if (unlikely(xdp_do_redirect(rq->netdev, &copy_xdp[i], prog)))
             goto xdp_clone_tx_abort_cpy;
-          }
-          __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-        } break;
-        case XDP_REDIRECT: {
-          /* When XDP enabled then page-refcnt==1 here */
-          err = xdp_do_redirect(rq->netdev, xdp, prog);
-          if (unlikely(err))
-            goto xdp_clone_tx_abort_cpy;
+
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
           __set_bit(MLX5E_RQ_FLAG_XDP_REDIRECT, rq->flags);
           rq->stats->xdp_redirect++;
-        } break;
-        default: {
+          break;
+
+        default:
           bpf_warn_invalid_xdp_action(rq->netdev, prog, actcpy);
           fallthrough;
-        }
+
         case XDP_ABORTED:
-        xdp_clone_tx_abort_cpy:
           trace_xdp_exception(rq->netdev, prog, actcpy);
           fallthrough;
+
         case XDP_DROP:
           rq->stats->xdp_drop++;
           break;
         }
       }
+
     xdp_clone_tx_exit:
+      return NULL;
+
+    xdp_clone_tx_abort_cpy:
+      trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+      rq->stats->xdp_drop++;
       return NULL;
     }
     case XDP_PASS:
