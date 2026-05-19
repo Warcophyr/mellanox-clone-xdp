@@ -83,7 +83,8 @@ int xdp_clone(struct xdp_md *ctx) {
     return XDP_DROP;
   }
 
-  return XDP_CLONE_TX(n_clone);
+  // bpf_printk("XDP: Cloning packet, num_copy: %u\n", n_clone);
+  return XDP_CLONE_PASS(n_clone);
 }
 
 char LICENSE[] SEC("license") = "GPL";
