@@ -30,35 +30,35 @@
  * SOFTWARE.
  */
 
+#include "devlink.h"
+#include "en.h"
+#include "en/devlink.h"
+#include "en/health.h"
+#include "en/params.h"
+#include "en/rep/tc.h"
+#include "en/txrx.h"
+#include "en/xdp.h"
+#include "en/xsk/rx.h"
+#include "en_accel/ipsec.h"
+#include "en_accel/ipsec_rxtx.h"
+#include "en_accel/ktls_txrx.h"
+#include "en_accel/macsec.h"
+#include "en_rep.h"
+#include "en_tc.h"
+#include "eswitch.h"
+#include "ipoib/ipoib.h"
+#include <linux/bitmap.h>
+#include <linux/filter.h>
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
-#include <linux/bitmap.h>
-#include <linux/filter.h>
+#include <net/gro.h>
+#include <net/inet_ecn.h>
 #include <net/ip6_checksum.h>
 #include <net/page_pool/helpers.h>
-#include <net/inet_ecn.h>
-#include <net/gro.h>
-#include <net/udp.h>
 #include <net/tcp.h>
+#include <net/udp.h>
 #include <net/xdp_sock_drv.h>
-#include "en.h"
-#include "en/txrx.h"
-#include "en_tc.h"
-#include "eswitch.h"
-#include "en_rep.h"
-#include "en/rep/tc.h"
-#include "ipoib/ipoib.h"
-#include "en_accel/ipsec.h"
-#include "en_accel/macsec.h"
-#include "en_accel/ipsec_rxtx.h"
-#include "en_accel/ktls_txrx.h"
-#include "en/xdp.h"
-#include "en/xsk/rx.h"
-#include "en/health.h"
-#include "en/params.h"
-#include "devlink.h"
-#include "en/devlink.h"
 
 #include <linux/bpf_trace.h>
 #include <linux/btf.h>
@@ -1614,6 +1614,11 @@ static void mlx5e_fill_mxbuf(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
   mxbuf->rq = rq;
 }
 
+/* ANDREA */
+static __always_inline bool xdp_buff_has_inline(struct xdp_buff *xdp) {
+  return xdp->data != xdp->data_meta;
+}
+
 static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
                                        struct mlx5e_rq *rq,
                                        struct xdp_buff *xdp) {
@@ -1624,6 +1629,8 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   dma_addr_t dma_addr;
   int i;
 
+  pr_alert("%s: called\n", __FUNCTION__);
+
   xdpf = xdp_convert_buff_to_frame(xdp);
   if (unlikely(!xdpf))
     return false;
@@ -1632,7 +1639,15 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   xdptxd->data = xdpf->data;
   xdptxd->len = xdpf->len;
   xdptxd->has_frags = xdp_frame_has_frags(xdpf);
+  /* ANDREA */
+  // xdptxd->has_inline = xdp_buff_has_inline(xdp);
+  // if (xdptxd->has_inline) {
+  //   // set metadat size
+  //   xdptxd->inline_sz = xdpf->data - xdp->data_meta;
+  //   // I'm not moving "data" pointer back of len(meta)
+  // }
 
+  // xdptxd->inline_sz = 50;
   if (xdp->rxq->mem.type == MEM_TYPE_XSK_BUFF_POOL) {
     /* The xdp_buff was in the UMEM and was copied into a newly
      * allocated page. The UMEM page was returned via the ZCA, and
@@ -1684,6 +1699,7 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   dma_sync_single_for_device(sq->pdev, dma_addr, xdptxd->len,
                              DMA_BIDIRECTIONAL);
 
+  printk(KERN_INFO "xdptxd->has_frags = %d\n", xdptxd->has_frags);
   if (xdptxd->has_frags) {
     xdptxdf.sinfo = xdp_get_shared_info_from_frame(xdpf);
     xdptxdf.dma_arr = NULL;
@@ -1702,7 +1718,8 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   xdptxd->dma_addr = dma_addr;
 
   if (unlikely(!INDIRECT_CALL_2(sq->xmit_xdp_frame, mlx5e_xmit_xdp_frame_mpwqe,
-                                mlx5e_xmit_xdp_frame, sq, xdptxd, 0, NULL)))
+                                mlx5e_xmit_xdp_frame, sq, xdptxd, 0,
+                                (struct xsk_tx_metadata *)xdp)))
     return false;
 
   /* xmit_mode == MLX5E_XDP_XMIT_MODE_PAGE */
@@ -1752,6 +1769,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
   u32 frag_size;
   const int XDP_CLONE_PASS = 5;
   const int XDP_CLONE_TX = 6;
+  pr_info("%s: called\n", __FUNCTION__);
 
   va = page_address(frag_page->page) + wi->offset;
   data = va + rx_headroom;
@@ -1778,7 +1796,6 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     /* Original packets must start with no metadata visible to BPF. */
     mxbuf.xdp.data_meta = xdp->data;
     act = bpf_prog_run_xdp(prog, xdp);
-    // printk("XDP action: %d\n", act);
     if (act > 4) {
       int __num_copy = act >> 5;
       int __xdp_clone = (act & 0x1F);
@@ -1795,7 +1812,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         __builtin_memcpy(mxbuf.xdp.data_meta, &num_copy, sizeof(num_copy));
       }
     } else {
-      mxbuf.xdp.data_meta = xdp->data;
+      // mxbuf.xdp.data_meta = xdp->data;
     }
 
     switch (act) {
@@ -2217,10 +2234,11 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
       return skb;
     case XDP_TX:
+      // pr_err("XDP_TX");
+      //   goto xdp_abort;
       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
-        goto xdp_abort;
-      __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-                                                    //   return true;
+        __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
+                                                      //   return true;
       return NULL;
     case XDP_REDIRECT:
       /* When XDP enabled then page-refcnt==1 here */

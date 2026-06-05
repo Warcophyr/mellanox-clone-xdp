@@ -79,8 +79,10 @@ static inline bool mlx5e_rx_hw_stamp(struct hwtstamp_config *config) {
 struct mlx5e_xmit_data {
   dma_addr_t dma_addr;
   void *data;
-  u32 len : 31;
+  u32 len : 24;
   u32 has_frags : 1;
+  u32 has_inline : 1;
+  u32 inline_sz : 6;
 };
 
 struct mlx5e_xmit_data_frags {

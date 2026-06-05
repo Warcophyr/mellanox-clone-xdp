@@ -64,7 +64,7 @@ mlx5_core-$(CONFIG_MLX5_CORE_EN) += en/rqt.o en/tir.o en/rss.o en/rx_res.o \
 		en/reporter_tx.o en/reporter_rx.o en/params.o en/xsk/pool.o \
 		en/xsk/setup.o en/xsk/rx.o en/xsk/tx.o en/devlink.o en/ptp.o \
 		en/qos.o en/htb.o en/trap.o en/fs_tt_redirect.o en/selq.o \
-		lib/crypto.o
+		lib/crypto.o en_flowtable.o
 
 #
 # Netdev extra
@@ -212,3 +212,8 @@ original:
 	-sudo ip link set ${ETH} up
 	-sudo ip link set ${ETH} promisc on
 	# -sudo ethtool --set-rxfh-indir ${ETH} equal 1
+
+attach:
+	$(MAKE) -C ./xdp attach
+detach:
+	$(MAKE) -C ./xdp detach
