@@ -60,6 +60,7 @@
 #include "lib/clock.h"
 #include "en/rx_res.h"
 #include "en/selq.h"
+#include "en_flowtable.h"
 
 extern const struct net_device_ops mlx5e_netdev_ops;
 struct page_pool;
@@ -937,6 +938,8 @@ struct mlx5e_priv {
   struct mlx5e_mqprio_rl *mqprio_rl;
   struct dentry *dfs_root;
   struct mlx5_devcom_comp_dev *devcom;
+  struct axdp_flow_ctx tx_xdp_flow_ctx;
+  struct axdp_flow_ctx rx_xdp_flow_ctx;
 };
 
 struct mlx5e_dev {

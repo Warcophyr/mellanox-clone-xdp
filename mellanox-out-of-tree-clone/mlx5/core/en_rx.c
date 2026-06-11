@@ -1629,7 +1629,7 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   dma_addr_t dma_addr;
   int i;
 
-  pr_alert("%s: called\n", __FUNCTION__);
+  pr_alert("%s: called!\n", __FUNCTION__);
 
   xdpf = xdp_convert_buff_to_frame(xdp);
   if (unlikely(!xdpf))
@@ -1795,7 +1795,51 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
     /* Original packets must start with no metadata visible to BPF. */
     mxbuf.xdp.data_meta = xdp->data;
+    //sal 
+    mxbuf.xdp.data_meta = (char*) xdp->data-16;
+    ((u32*) mxbuf.xdp.data_meta)[0] = cqe->rss_hash_result;
+    //get_cqe_ts
+    ((u32*) mxbuf.xdp.data_meta)[1] = be32_to_cpu(cqe->timestamp_h);
+    ((u32*) mxbuf.xdp.data_meta)[2] = be32_to_cpu(cqe->timestamp_l);
+    ((u32*) mxbuf.xdp.data_meta)[3] = cqe->ft_metadata;
+    //pr_info("added rx metadata\n");
+    //u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
+    //printk(KERN_INFO "hash type: %d\n",htype);
+    //printk(KERN_INFO "hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
+    
     act = bpf_prog_run_xdp(prog, xdp);
+
+    //sal 
+    struct mlx5e_priv *priv = netdev_priv(rq->netdev);
+    u32 *header_xdp = (u32 *)xdp->data_meta;
+    u32 command_axdp = *(header_xdp);
+    header_xdp++;
+    u32 command_value_axdp = *(header_xdp);
+    header_xdp++;
+    printk(KERN_INFO "--> command_axdp=0x%x command_value=0x%x\n", command_axdp, command_value_axdp);
+    /*
+    if (command_axdp==1) {//ADD TX rule
+      int ferr =add_meta_rule(priv->mdev, &priv->tx_xdp_flow_ctx,command_value_axdp);
+			if (ferr)
+				printk(KERN_INFO "add_tx_rule failed: %d\n", ferr);
+			else 
+				printk(KERN_INFO "add_tx_rule done with meta value (0x%x)\n",command_value_axdp);
+    }
+    if (command_axdp==2) {//ADD RX rule
+      int ferr =add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,command_value_axdp);
+			if (ferr)
+				printk(KERN_INFO "add_tx_rule failed: %d\n", ferr);
+			else 
+				printk(KERN_INFO "add_tx_rule done with meta value (0x%x)\n",command_value_axdp);
+    }
+    if (command_axdp==3) {//DEL TX rule
+      del_rule(&priv->tx_xdp_flow_ctx,command_value_axdp);
+    }
+    if (command_axdp==4) {//DEL RX rule
+      del_rule(&priv->rx_xdp_flow_ctx,command_value_axdp);
+    }*/
+    xdp->data_meta = header_xdp; 
+
     if (act > 4) {
       int __num_copy = act >> 5;
       int __xdp_clone = (act & 0x1F);

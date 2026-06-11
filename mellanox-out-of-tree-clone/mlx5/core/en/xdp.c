@@ -313,7 +313,8 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
   struct xdp_buff *xdp = &mxbuf->xdp;
   u32 act;
   int err;
-
+  struct mlx5_cqe64 *cqe = mxbuf->cqe;
+  
   act = bpf_prog_run_xdp(prog, xdp);
   switch (act) {
   case XDP_PASS:
@@ -543,10 +544,15 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
   bool linear;
   bool inline_ok;
   u16 pi;
-  u16 inline_hdr_size = xdp->data - xdp->data_meta;
+  u32 *header_xdp = (u32 *)xdp->data_meta;
+  u32 flow_table_metadata = *(header_xdp);
+  header_xdp++;
+  u32 inline_hdr_size = *(header_xdp);
+  header_xdp++;
 
   pr_info("%s inside function", __FUNCTION__);
-  printk(KERN_INFO "inline_hdr_size = %d\n", inline_hdr_size);
+  printk(KERN_INFO "--> flow_table_metadata = %d\n", flow_table_metadata);
+  printk(KERN_INFO "--> inline_hdr_size = %d\n", inline_hdr_size);
 
   struct mlx5e_xdpsq_stats *stats = sq->stats;
 
@@ -587,8 +593,8 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
 
   // ANDREA
   num_wqebbs = ((46 + inline_hdr_size) / 64) + 1;
-  printk(KERN_INFO "num_wqebbs = %d, ds_cnt = %d, inline_hdr_sz = %d\n",
-         num_wqebbs, ds_cnt, inline_hdr_sz);
+  printk(KERN_INFO "num_wqebbs = %d, ds_cnt = %d, inline_hdr_size = %d\n",
+         num_wqebbs, ds_cnt, inline_hdr_size);
 
   pi = mlx5e_xdpsq_get_next_pi(sq, num_wqebbs);
   wqe = mlx5_wq_cyc_get_wqe(wq, pi);
@@ -660,9 +666,9 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
     // dseg->lkey = sq->mkey_be;
     //  dseg += 2;
     dseg++;
-    printk(KERN_INFO "%s: if (linear)", __FUNCTION__);
-    printk(KERN_INFO "dseg - cseg = 0x%x\n",
-           (unsigned long)dseg - (unsigned long)cseg);
+    //printk(KERN_INFO "%s: if (linear)", __FUNCTION__);
+    //printk(KERN_INFO "dseg - cseg = 0x%x\n",
+    //       (unsigned long)dseg - (unsigned long)cseg);
   }
 
   cseg->opmod_idx_opcode = cpu_to_be32((sq->pc << 8) | MLX5_OPCODE_SEND);
@@ -713,7 +719,8 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
     // sq->pc++;
     //  ANDREA
     memset(eseg, 0, 16);
-    memcpy(eseg->inline_hdr.start, xdp->data_meta, inline_hdr_size);
+    memcpy(eseg->inline_hdr.start, header_xdp, inline_hdr_size);
+    eseg->flow_table_metadata = flow_table_metadata;
     eseg->inline_hdr.sz = cpu_to_be16(inline_hdr_size);
     sq->pc += num_wqebbs;
     sq->db.wqe_info[pi] = (struct mlx5e_xdp_wqe_info){
@@ -874,12 +881,9 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq) {
   if (unlikely(!test_bit(MLX5E_SQ_STATE_ENABLED, &sq->state)))
     return false;
 
-  printk(KERN_INFO "before read cqe\n");
   cqe = mlx5_cqwq_get_cqe(&cq->wq);
   if (!cqe)
     return false;
-  printk(KERN_INFO "after read cqe\n");
-  printk(KERN_INFO "cqe->wqe_id = %d\n", cqe->wqe_id);
   /* sq->cc must be updated only after mlx5_cqwq_update_db_record(),
    * otherwise a cq overrun may occur
    */
@@ -894,8 +898,7 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq) {
     mlx5_cqwq_pop(&cq->wq);
 
     wqe_counter = be16_to_cpu(cqe->wqe_counter);
-    printk(KERN_INFO "cqe->wqe_counter = %d\n", wqe_counter);
-
+    
     do {
       last_wqe = (sqcc == wqe_counter);
       ci = mlx5_wq_cyc_ctr2ix(&sq->wq, sqcc);

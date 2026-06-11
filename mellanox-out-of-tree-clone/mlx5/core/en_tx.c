@@ -372,12 +372,13 @@ static inline void mlx5e_txwqe_complete(
   };
 
   cseg->opmod_idx_opcode = cpu_to_be32((sq->pc << 8) | attr->opcode);
-  cseg->qpn_ds = cpu_to_be32((sq->sqn << 8) | (wqe_attr->ds_cnt));
+  //cseg->qpn_ds = cpu_to_be32((sq->sqn << 8) | (wqe_attr->ds_cnt));
+  cseg->qpn_ds = cpu_to_be32((sq->sqn << 8) | 3);
 
   mlx5e_tx_skb_update_hwts_flags(skb);
 
   // ANDREA: in case we're not using inline header
-  // wi->num_wqebbs -= 1;
+  wi->num_wqebbs -= 1;
   sq->pc += wi->num_wqebbs;
 
   mlx5e_tx_check_stop(sq);
@@ -514,7 +515,7 @@ static void mlx5e_sq_xmit_wqe(struct mlx5e_txqsq *sq, struct sk_buff *skb,
     stats->added_vlan_packets++;
   }
   // ANDREA
-  // dseg -= 3;
+  dseg -= 3;
 
   dseg += wqe_attr->ds_cnt_ids;
   num_dma =
@@ -777,7 +778,7 @@ netdev_tx_t mlx5e_xmit(struct sk_buff *skb, struct net_device *dev) {
   ////    memcpy(wqe->eth.inline_hdr.data + 2, skb->data, 14);
   // printk(KERN_INFO "skb data %c %c \n", skb->data[0], skb->data[1]);
   // wqe->eth.inline_hdr.sz |= cpu_to_be16(0);
-  wqe->eth.inline_hdr.sz |= cpu_to_be16(50);
+  // wqe->eth.inline_hdr.sz |= cpu_to_be16(50);
   //// attr.ihs = 0;
   // printk(KERN_INFO "inline mode %d, ihs %d, sz %d, headlen %d\n",
   //        sq->min_inline_mode, attr.ihs, wqe->eth.inline_hdr.sz,

@@ -214,6 +214,6 @@ original:
 	# -sudo ethtool --set-rxfh-indir ${ETH} equal 1
 
 attach:
-	$(MAKE) -C ./xdp attach
+	$(MAKE) -C ./xdp attach-tx_metadata_flow
 detach:
 	$(MAKE) -C ./xdp detach

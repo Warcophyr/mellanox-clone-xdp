@@ -4849,12 +4849,52 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 
 	old_prog = priv->channels.params.xdp_prog;
 
+	/* tear down the steering rule before removing the XDP program */
+	if (!prog) {
+		del_table_rule(&priv->tx_xdp_flow_ctx);
+		del_table_rule(&priv->rx_xdp_flow_ctx);
+	}
+
 	err = mlx5e_safe_switch_params(priv, &new_params, NULL, NULL, reset);
 	if (err)
 		goto unlock;
 
 	if (old_prog)
 		bpf_prog_put(old_prog);
+
+	/* install the steering rule after the XDP program is active */
+	if (prog) {
+		u32 meta_tag=0x2a2a2a2a;
+		u32 dip=0x81C847CC;
+		int ferr = add_meta_table(priv->mdev, &priv->tx_xdp_flow_ctx);
+		if (ferr)
+			netdev_warn(netdev,
+				    "add_meta_table failed: %d\n", ferr);
+		else {
+			printk(KERN_INFO "add_meta_table done");
+			ferr =add_meta_rule(priv->mdev, &priv->tx_xdp_flow_ctx,meta_tag);
+			if (ferr)
+			netdev_warn(netdev,
+				    "add_meta_rule failed: %d\n", ferr);
+			else 
+				printk(KERN_INFO "add_meta_table done with value 0x%x\n",meta_tag);
+			}
+		ferr = add_rx_table(priv->mdev, &priv->rx_xdp_flow_ctx);
+		if (ferr)
+			netdev_warn(netdev,
+				    "add_rx_table failed: %d\n", ferr);
+		else {
+			printk(KERN_INFO "add_meta_table done");
+			ferr =add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,dip);
+			if (ferr)
+			netdev_warn(netdev,
+				    "add_rx_rule failed: %d\n", ferr);
+			else 
+				printk(KERN_INFO "add_meta_table done with dip value %pI4 (0x%x)\n",&dip,dip);
+			}
+		
+
+	}
 
 	if (!test_bit(MLX5E_STATE_OPENED, &priv->state) || reset)
 		goto unlock;
