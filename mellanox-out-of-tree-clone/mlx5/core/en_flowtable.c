@@ -416,9 +416,12 @@ void del_rule(struct axdp_flow_ctx *ctx, u32 index)
 {
 	if (index >= AXDP_MAX_RULES)
 		return;
-	if (ctx->rules[index])
-			mlx5_del_flow_rules(ctx->rules[index]);
-	ctx->n_rules--;
+	if (!ctx->rules[index])
+		return;
+	mlx5_del_flow_rules(ctx->rules[index]);
+	ctx->rules[index] = NULL;
+	if (ctx->n_rules)
+		ctx->n_rules--;
 }
 
 void del_table_rule(struct axdp_flow_ctx *ctx)

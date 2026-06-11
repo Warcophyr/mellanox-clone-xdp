@@ -43,6 +43,7 @@
 #include <net/xdp_sock_drv.h>
 #include "eswitch.h"
 #include "en.h"
+#include "en_ioctl.h"
 #include "en/txrx.h"
 #include "en_tc.h"
 #include "en_rep.h"
@@ -4851,6 +4852,7 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 
 	/* tear down the steering rule before removing the XDP program */
 	if (!prog) {
+		mlx5e_axdp_ioctl_unregister(priv);
 		del_table_rule(&priv->tx_xdp_flow_ctx);
 		del_table_rule(&priv->rx_xdp_flow_ctx);
 	}
@@ -4864,36 +4866,24 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 
 	/* install the steering rule after the XDP program is active */
 	if (prog) {
-		u32 meta_tag=0x2a2a2a2a;
-		u32 dip=0x81C847CC;
 		int ferr = add_meta_table(priv->mdev, &priv->tx_xdp_flow_ctx);
 		if (ferr)
 			netdev_warn(netdev,
 				    "add_meta_table failed: %d\n", ferr);
-		else {
+		else 
 			printk(KERN_INFO "add_meta_table done");
-			ferr =add_meta_rule(priv->mdev, &priv->tx_xdp_flow_ctx,meta_tag);
-			if (ferr)
-			netdev_warn(netdev,
-				    "add_meta_rule failed: %d\n", ferr);
-			else 
-				printk(KERN_INFO "add_meta_table done with value 0x%x\n",meta_tag);
-			}
 		ferr = add_rx_table(priv->mdev, &priv->rx_xdp_flow_ctx);
 		if (ferr)
 			netdev_warn(netdev,
 				    "add_rx_table failed: %d\n", ferr);
-		else {
+		else 
 			printk(KERN_INFO "add_meta_table done");
-			ferr =add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,dip);
-			if (ferr)
-			netdev_warn(netdev,
-				    "add_rx_rule failed: %d\n", ferr);
-			else 
-				printk(KERN_INFO "add_meta_table done with dip value %pI4 (0x%x)\n",&dip,dip);
-			}
 		
-
+		/* expose the ioctl device so userspace can add/remove rules */
+		ferr = mlx5e_axdp_ioctl_register(priv);
+		if (ferr)
+			netdev_warn(netdev,
+				    "mlx5e_axdp_ioctl_register failed: %d\n", ferr);
 	}
 
 	if (!test_bit(MLX5E_STATE_OPENED, &priv->state) || reset)
