@@ -16,11 +16,11 @@ __always_inline int stamp_metadata(struct xdp_md *ctx, int value) {
         void  *data = (void *)(long)ctx->data;
         __u8  *data_meta  = (void *)(long)ctx->data_meta;
         __u32 *header = (void *)(long)ctx->data_meta;
-        if ((void *)data_meta + META_MAX+16 > data) {
+        if ((void *)data_meta + META_MAX+8 > data) {
             bpf_printk("no meta space\n");
             return -1;
         }
-        header[2] = value;   // metadata value
+        header[0] = value;   // metadata value
         return 0;
 }
 
@@ -28,15 +28,15 @@ __always_inline int inline_header(struct xdp_md *ctx, __u8* buff) {
         void  *data = (void *)(long)ctx->data;
         __u8  *data_meta  = (void *)(long)ctx->data_meta;
         __u32 *header = (void *)(long)ctx->data_meta;
-        if ((void *)data_meta + META_MAX+16 > data) {
+        if ((void *)data_meta + META_MAX+8 > data) {
             bpf_printk("no meta space\n");
             return -1;
         }
         /* here we populate the inline header*/
-        header[3] = META_MAX;   // inline header len
+        header[1] = META_MAX;   // inline header len
         #pragma unroll
         for (int i = 0; i < META_MAX; i++) {
-            data_meta[i+16] = buff[i];
+            data_meta[i+8] = buff[i];
         }
     return 0;
 }
@@ -65,22 +65,12 @@ int xdptx_metadata_flow(struct xdp_md *ctx)
         void  *data = (void *)(long)ctx->data;
         __u8  *data_meta  = (void *)(long)ctx->data_meta;
         __u32 *header = (void *)(long)ctx->data_meta;
-        if ((void *)data_meta + META_MAX+16 > data) {
+        if ((void *)data_meta + META_MAX+8 > data) {
             bpf_printk("no meta space\n");
             return XDP_DROP;
         }
 
-        /* here we set metadata flow and header len*/
-        //TX headers 
-        if (flag)
-            header[0] = 0; 
-        else {
-            header[0] = 2; // command to insert/remove FTE --> 1: ADD TX rule 2: ADD RX rule 3: DEL TX rule 4: DEL RX rule
-            flag=1;
-        }
-        header[1] = 0x647010AC; //value for FTE entry  //DIP 172.16.112.100
-        
-        //header[2] = 0x2a2a2a2b; // flow_metadata
+        //header[0] = 0x2a2a2a2b; // flow_metadata
         if (stamp_metadata(ctx,0x2a2a2a2b))
             return XDP_DROP;
         
@@ -94,7 +84,7 @@ int xdptx_metadata_flow(struct xdp_md *ctx)
             return XDP_DROP;
         
         /*
-        header[3] = META_MAX;   // inline header len
+        header[1] = META_MAX;   // inline header len
         
         #pragma unroll
         for (int i = 16; i < META_MAX+16; i++) {
