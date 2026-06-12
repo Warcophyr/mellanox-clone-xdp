@@ -21,7 +21,9 @@
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/if_ether.h>
+#include <linux/in.h>
 #include "en_flowtable.h"
+#include "en_ioctl.h"	/* AXDP_RX_DROP / AXDP_RX_PASS */
 
 int add_meta_and_dip_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 			  u32 meta_tag, __be32 dst_ip)
@@ -350,7 +352,9 @@ int add_rx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
 	return 0;
 }
 
-int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, __be32 dip) {
+int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
+		__be32 sip, __be32 dip, u8 ip_proto, __be16 sport, __be16 dport,
+		u8 action) {
 	struct mlx5_flow_act flow_act = {};
 	struct mlx5_flow_spec *spec = NULL;
 	void *outer_c, *outer_v;
@@ -366,10 +370,15 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, __be32 di
 	 * Con l'auto-grouped table NON costruiamo il flow group: impostiamo
 	 * solo spec->match_criteria_enable e i campi nello spec. Il kernel
 	 * deriva il gruppo dalla maschera in match_criteria.
+	 *
+	 * La quintupla (src IP, dst IP, protocollo L4, src port, dst port) sta
+	 * tutta in outer_headers (fte_match_set_lyr_2_4), quindi basta abilitare
+	 * MLX5_MATCH_OUTER_HEADERS. Ogni campo passato a 0 viene trattato come
+	 * wildcard: non si imposta la sua maschera e non entra nel match.
 	 */
 	spec->match_criteria_enable = MLX5_MATCH_OUTER_HEADERS;
 
-	/* ---- outer_headers: ethertype + ip_version + dst IPv4 ---- */
+	/* ---- outer_headers: ethertype + ip_version (sempre, solo IPv4) ---- */
 	outer_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
 			       outer_headers);
 	outer_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
@@ -380,15 +389,59 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, __be32 di
 	MLX5_SET(fte_match_set_lyr_2_4, outer_c, ip_version, 0xf);
 	MLX5_SET(fte_match_set_lyr_2_4, outer_v, ip_version, 4);
 
-	memset(MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_c,
-			    dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
-	       0xff, 4);
-	memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_v,
-			    dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
-	       &dip, 4);
+	/* ---- src IPv4 (0 = wildcard) ---- */
+	if (sip) {
+		memset(MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_c,
+				    src_ipv4_src_ipv6.ipv4_layout.ipv4),
+		       0xff, 4);
+		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_v,
+				    src_ipv4_src_ipv6.ipv4_layout.ipv4),
+		       &sip, 4);
+	}
 
-	/* ---- azione: DROP ---- */
-	flow_act.action = MLX5_FLOW_CONTEXT_ACTION_DROP;
+	/* ---- dst IPv4 (0 = wildcard) ---- */
+	if (dip) {
+		memset(MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_c,
+				    dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
+		       0xff, 4);
+		memcpy(MLX5_ADDR_OF(fte_match_set_lyr_2_4, outer_v,
+				    dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
+		       &dip, 4);
+	}
+
+	/* ---- protocollo L4 + porte TCP/UDP (0 = wildcard) ---- */
+	if (ip_proto) {
+		MLX5_SET(fte_match_set_lyr_2_4, outer_c, ip_protocol, 0xff);
+		MLX5_SET(fte_match_set_lyr_2_4, outer_v, ip_protocol, ip_proto);
+
+		if (ip_proto == IPPROTO_TCP) {
+			if (sport) {
+				MLX5_SET(fte_match_set_lyr_2_4, outer_c, tcp_sport, 0xffff);
+				MLX5_SET(fte_match_set_lyr_2_4, outer_v, tcp_sport,
+					 be16_to_cpu(sport));
+			}
+			if (dport) {
+				MLX5_SET(fte_match_set_lyr_2_4, outer_c, tcp_dport, 0xffff);
+				MLX5_SET(fte_match_set_lyr_2_4, outer_v, tcp_dport,
+					 be16_to_cpu(dport));
+			}
+		} else if (ip_proto == IPPROTO_UDP) {
+			if (sport) {
+				MLX5_SET(fte_match_set_lyr_2_4, outer_c, udp_sport, 0xffff);
+				MLX5_SET(fte_match_set_lyr_2_4, outer_v, udp_sport,
+					 be16_to_cpu(sport));
+			}
+			if (dport) {
+				MLX5_SET(fte_match_set_lyr_2_4, outer_c, udp_dport, 0xffff);
+				MLX5_SET(fte_match_set_lyr_2_4, outer_v, udp_dport,
+					 be16_to_cpu(dport));
+			}
+		}
+	}
+
+	/* ---- azione: PASS (ALLOW) o DROP ---- */
+	flow_act.action = (action == AXDP_RX_PASS) ?
+		MLX5_FLOW_CONTEXT_ACTION_ALLOW : MLX5_FLOW_CONTEXT_ACTION_DROP;
 
 	ctx->rules[ctx->n_rules] = mlx5_add_flow_rules(ctx->ft, spec, &flow_act, NULL, 0);
 	if (IS_ERR(ctx->rules[ctx->n_rules])) {
@@ -398,8 +451,10 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, __be32 di
 		goto out_spec;
 	}
     ctx->n_rules++;
-	pr_info("axdp: regola RX installata: dst_ip=%pI4 -> DROP\n", &dip);
-	
+	pr_info("axdp: regola RX installata: src=%pI4 dst=%pI4 proto=%u sport=%u dport=%u -> %s\n",
+		&sip, &dip, ip_proto, be16_to_cpu(sport), be16_to_cpu(dport),
+		(action == AXDP_RX_PASS) ? "PASS" : "DROP");
+
 	kvfree(spec);
 	return 0;
 
