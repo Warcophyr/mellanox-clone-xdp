@@ -46,10 +46,21 @@ static long axdp_do_add_tx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 
 static long axdp_do_add_rx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 {
+	__be32 dip = (__be32)req->dst_ip;
 	int idx, err;
 
+	/*
+	 * Backward-compat: legacy callers fill only @value (dst IPv4) and leave
+	 * the 5-tuple zeroed. Map @value onto the destination IP in that case.
+	 */
+	if (!req->src_ip && !req->dst_ip && !req->ip_proto)
+		dip = (__be32)req->value;
+
 	idx = priv->rx_xdp_flow_ctx.n_rules;
-	err = add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx, (__be32)req->value);
+	err = add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,
+			  (__be32)req->src_ip, dip, req->ip_proto,
+			  (__be16)req->src_port, (__be16)req->dst_port,
+			  req->action);
 	if (err)
 		return err;
 
