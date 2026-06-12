@@ -1750,6 +1750,7 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   return true;
 }
 
+
 static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
                                                  struct mlx5e_wqe_frag_info *wi,
                                                  struct mlx5_cqe64 *cqe,
@@ -1796,12 +1797,17 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     /* Original packets must start with no metadata visible to BPF. */
     mxbuf.xdp.data_meta = xdp->data;
     //sal 
-    mxbuf.xdp.data_meta = (char*) xdp->data-16;
+    mxbuf.xdp.data_meta = (char*) xdp->data-20;
     ((u32*) mxbuf.xdp.data_meta)[0] = cqe->rss_hash_result;
     //get_cqe_ts
     ((u32*) mxbuf.xdp.data_meta)[1] = be32_to_cpu(cqe->timestamp_h);
     ((u32*) mxbuf.xdp.data_meta)[2] = be32_to_cpu(cqe->timestamp_l);
     ((u32*) mxbuf.xdp.data_meta)[3] = cqe->ft_metadata;
+    u8 l4_type=get_cqe_l4_hdr_type(cqe);
+    u16 flow_tag = get_cqe_flow_tag(cqe);
+    ((u32*) mxbuf.xdp.data_meta)[4] = (flow_tag <<8) + (0x0ff & l4_type);
+    
+    
     //pr_info("added rx metadata\n");
     //u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
     //printk(KERN_INFO "hash type: %d\n",htype);
@@ -1810,14 +1816,14 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     act = bpf_prog_run_xdp(prog, xdp);
 
     //sal 
-    struct mlx5e_priv *priv = netdev_priv(rq->netdev);
+    /*struct mlx5e_priv *priv = netdev_priv(rq->netdev);
     u32 *header_xdp = (u32 *)xdp->data_meta;
     u32 command_axdp = *(header_xdp);
     header_xdp++;
     u32 command_value_axdp = *(header_xdp);
     header_xdp++;
     printk(KERN_INFO "--> command_axdp=0x%x command_value=0x%x\n", command_axdp, command_value_axdp);
-    /*
+    
     if (command_axdp==1) {//ADD TX rule
       int ferr =add_meta_rule(priv->mdev, &priv->tx_xdp_flow_ctx,command_value_axdp);
 			if (ferr)
@@ -1837,8 +1843,8 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     }
     if (command_axdp==4) {//DEL RX rule
       del_rule(&priv->rx_xdp_flow_ctx,command_value_axdp);
-    }*/
-    xdp->data_meta = header_xdp; 
+    }
+    xdp->data_meta = header_xdp; */
 
     if (act > 4) {
       int __num_copy = act >> 5;
