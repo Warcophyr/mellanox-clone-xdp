@@ -1,0 +1,22 @@
+[19:33:11] === 02_cpu_microarch starting ===
+[19:33:11]   IFACE=enp52s0f1np1  PEER=192.168.101.2  PERF_SECS=10
+[env] Snapshot → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/02_cpu_microarch/results/env.json
+[0;32m[ OK ][0m  Link enp52s0f1np1 is up
+[0;32m[ OK ][0m  Peer 192.168.101.2 is reachable
+[0;34m[INFO][0m  Setting CPU governor → performance...
+[0;34m[INFO][0m  Disabling turbo boost...
+[0;34m[INFO][0m  Stopping irqbalance...
+[0;33m[WARN][0m  Could not stop irqbalance — IRQ migrations may affect results
+[0;34m[INFO][0m  Disabling ASLR...
+[0;32m[ OK ][0m  CPU isolation active
+[0;34m[INFO][0m  Pinning enp52s0f1np1 IRQs → NUMA-0 CPUs (0-15)...
+[0;32m[ OK ][0m  Pinned 0 IRQs (affinity mask=0xffff)
+[0;34m[INFO][0m  ── Scenario: rx_burst_64 ──────────────────────────────────
+[0;34m[INFO][0m    iperf3 args : --reverse --length 64
+[0;34m[INFO][0m    perf window : 10s
+Traceback (most recent call last):
+  File "/mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/02_cpu_microarch/trex_run.py", line 16, in <module>
+    from trex_runner import TRexRunner
+  File "/mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/lib/trex_runner.py", line 24, in <module>
+    from src.orchestrator import TRexOrchestrator
+ModuleNotFoundError: No module named 'src'

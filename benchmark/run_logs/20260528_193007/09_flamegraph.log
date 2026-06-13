@@ -1,0 +1,3 @@
+[0;33m[WARN][0m  FlameGraph scripts not found.
+[0;33m[WARN][0m  Install with: git clone https://github.com/brendangregg/FlameGraph /usr/local/FlameGraph
+[0;33m[WARN][0m  SVG generation will be skipped — perf.data files will still be recorded.

@@ -1737,6 +1737,11 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
                                                  struct mlx5e_wqe_frag_info *wi,
                                                  struct mlx5_cqe64 *cqe,
                                                  u32 cqe_bcnt) {
+
+  // ktime_t start_time, end_time;
+  // ktime_t elapsed; // This is key - store the ktime_t delta
+  // s64 elapsed_ns;
+
   struct mlx5e_frag_page *frag_page = wi->frag_page;
   u16 rx_headroom = rq->buff.headroom;
   struct bpf_prog *prog;
@@ -1800,7 +1805,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
-      skb = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
+
+      // skb = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
+      skb = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
       if (unlikely(!skb)) {
         rq->stats->buff_alloc_err++;
         return NULL;
@@ -1823,11 +1830,124 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         if (mlx5e_cqe_regb_chain(cqe))
           if (!mlx5e_tc_update_skb_nic(cqe, skb)) {
             dev_kfree_skb_any(skb);
-            goto xdp_clone_pass_exit;
+            return NULL;
           }
 
         napi_gro_receive(rq->cq.napi, skb);
       }
+
+      if (num_copy == 1) {
+        /* Fast path clone_pass(1): zero-copy dell'originale sulla pagina RX
+         * esistente. Evita napi_alloc_skb + memcpy per l'originale, come fa
+         * XDP_PASS normale. */
+
+        /* Singola copia: riesegue XDP e gestisce il risultato */
+        struct sk_buff *skbcpy;
+        {
+          const int __cp1 = 1;
+          if (unlikely(
+                  (size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
+                  sizeof(__cp1))) {
+            trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+            rq->stats->xdp_drop++;
+            goto xdp_clone_pass_exit;
+          }
+          mxbuf.xdp.data_meta = xdp->data - sizeof(__cp1);
+          __builtin_memcpy(mxbuf.xdp.data_meta, &__cp1, sizeof(__cp1));
+          actcpy = bpf_prog_run_xdp(prog, xdp);
+          mxbuf.xdp.data_meta = xdp->data;
+          if (unlikely(actcpy > 4)) {
+            trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+            rq->stats->xdp_drop++;
+            goto xdp_clone_pass_exit;
+          }
+          switch (actcpy) {
+          case XDP_PASS: {
+            // skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy +
+            // 1)));
+            // skbcpy = napi_alloc_skb(rq->cq.napi, cqe_bcnt * 2);
+            // skbcpy = napi_alloc_skb(rq->cq.napi, cqe_bcnt + (cqe_bcnt / 2));
+            skbcpy = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
+            if (unlikely(!skbcpy)) {
+              rq->stats->buff_alloc_err++;
+              break;
+            }
+            skb_reserve(skbcpy, rx_headroom);
+            skb_put_data(skbcpy, data, cqe_bcnt);
+
+            if (metasize)
+              skb_metadata_set(skbcpy, metasize);
+
+            mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skbcpy);
+            if (mlx5e_cqe_regb_chain(cqe))
+              if (!mlx5e_tc_update_skb_nic(cqe, skbcpy)) {
+                dev_kfree_skb_any(skbcpy);
+                break;
+              }
+            napi_gro_receive(rq->cq.napi, skbcpy);
+            goto xdp_clone_pass_exit;
+          } break;
+          case XDP_TX: {
+            page_pool_ref_page(frag_page->page);
+            if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+              page_pool_unref_page(frag_page->page, 1);
+              trace_xdp_exception(rq->netdev, prog, actcpy);
+              rq->stats->xdp_drop++;
+              goto xdp_clone_pass_exit;
+            }
+            __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
+            goto xdp_clone_pass_exit;
+          } break;
+          case XDP_REDIRECT: {
+            err = xdp_do_redirect(rq->netdev, xdp, prog);
+            if (unlikely(err)) {
+              trace_xdp_exception(rq->netdev, prog, actcpy);
+              rq->stats->xdp_drop++;
+              goto xdp_clone_pass_exit;
+            }
+            __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
+            __set_bit(MLX5E_RQ_FLAG_XDP_REDIRECT, rq->flags);
+            rq->stats->xdp_redirect++;
+            goto xdp_clone_pass_exit;
+          }
+          default:
+            bpf_warn_invalid_xdp_action(rq->netdev, prog, actcpy);
+            fallthrough;
+          case XDP_ABORTED:
+            trace_xdp_exception(rq->netdev, prog, actcpy);
+            fallthrough;
+          case XDP_DROP:
+            rq->stats->xdp_drop++;
+            goto xdp_clone_pass_exit;
+          }
+        }
+        goto xdp_clone_pass_exit;
+      }
+      // /* Path generale (num_copy != 1): alloca e copia come prima */
+
+      struct page *page[num_copy];
+      void *copy_va[num_copy];
+      struct xdp_buff copy_xdp[num_copy];
+
+      // start_time = ktime_get();
+      for (int i = 0; i < num_copy; i++) {
+
+        page[i] = page_pool_dev_alloc_pages(rq->page_pool);
+        if (!page[i]) {
+          trace_xdp_exception(rq->netdev, prog, actcpy);
+          rq->stats->xdp_drop++;
+          return NULL;
+        }
+
+        // Copy packet data to new buffer
+        copy_va[i] = page_address(page[i]);
+        __builtin_memcpy(copy_va[i], va, rx_headroom + cqe_bcnt);
+
+        // Create new xdp_buff pointing to copied data
+        xdp_init_buff(&copy_xdp[i], rq->buff.frame0_sz, &rq->xdp_rxq);
+        xdp_prepare_buff(&copy_xdp[i], copy_va[i], rx_headroom, cqe_bcnt, true);
+      }
+
       struct sk_buff *skbcpy;
       for (int i = 0; i < num_copy; i++) {
         int __num_copy = i + 1;
@@ -1837,23 +1957,25 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           actcpy = XDP_ABORTED;
           goto xdp_clone_pass_abort_cpy;
         }
-        mxbuf.xdp.data_meta = xdp->data - sizeof(__num_copy);
-        __builtin_memcpy(mxbuf.xdp.data_meta, &__num_copy, sizeof(__num_copy));
-        actcpy = bpf_prog_run_xdp(prog, xdp);
-        mxbuf.xdp.data_meta = xdp->data;
+        copy_xdp[i].data_meta = copy_xdp[i].data - sizeof(__num_copy);
+        __builtin_memcpy(copy_xdp[i].data_meta, &__num_copy,
+                         sizeof(__num_copy));
+        actcpy = bpf_prog_run_xdp(prog, &copy_xdp[i]);
+        copy_xdp[i].data_meta = copy_xdp[i].data;
         if (actcpy > 4) {
           goto xdp_clone_pass_abort_cpy;
         }
         switch (actcpy) {
         case XDP_PASS: {
-          skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
+          // skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
+          skbcpy = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
           if (unlikely(!skbcpy)) {
             rq->stats->buff_alloc_err++;
             break;
           }
 
           skb_reserve(skbcpy, rx_headroom);
-          skb_put_data(skbcpy, data, cqe_bcnt);
+          skb_put_data(skbcpy, copy_xdp[i].data, cqe_bcnt);
 
           if (metasize)
             skb_metadata_set(skbcpy, metasize);
@@ -1872,23 +1994,16 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
             napi_gro_receive(rq->cq.napi, skbcpy);
           }
+          if (copy_va[i])
+            page_pool_unref_page(page[i], 1);
+
         } break;
         case XDP_TX: {
-          /* Increment core page pool reference count for this clone */
-          page_pool_ref_page(frag_page->page);
-          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
-            // I need to decrement the refcnt of the page for each copy that is
-            // not passed or transmitted, otherwise I have a memory leak because
-            // the page will never be recycled and reused
-            page_pool_unref_page(frag_page->page, 1);
+          if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, &copy_xdp[i]))) {
+            page_pool_unref_page(page[i], 1);
             goto xdp_clone_pass_abort_cpy;
           }
           __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
-          rcu_read_lock();
-          mlx5e_xmit_xdp_doorbell(rq->xdpsq);
-          mlx5e_poll_xdpsq_cq(&rq->xdpsq->cq);
-          rcu_read_unlock();
-
         } break;
         case XDP_REDIRECT: {
           /* When XDP enabled then page-refcnt==1 here */
@@ -1912,10 +2027,11 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           break;
         }
       }
+    }
     xdp_clone_pass_exit:
       return NULL;
-    }
     case XDP_CLONE_TX: {
+
       mxbuf.xdp.data_meta = xdp->data;
       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
         goto xdp_abort;
@@ -1930,20 +2046,55 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       void *copy_va[num_copy];
       struct xdp_buff copy_xdp[num_copy];
 
+      // start_time = ktime_get();
+
       for (int i = 0; i < num_copy; i++) {
-
         page[i] = page_pool_dev_alloc_pages(rq->page_pool);
-        if (!page[i])
-          goto xdp_clone_tx_abort_cpy;
+        if (unlikely(!page[i])) {
+          int j;
+          for (j = 0; j < i; j++)
+            page_pool_unref_page(page[j], 1);
+          trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+          rq->stats->xdp_drop++;
+          goto xdp_clone_tx_exit;
+        }
+      }
 
-        // Copy packet data to new buffer
+      /* Loop 2: prefetch */
+      for (int i = 0; i < num_copy; i++) {
         copy_va[i] = page_address(page[i]);
-        __builtin_memcpy(copy_va[i], va, rx_headroom + cqe_bcnt);
+        prefetchw(copy_va[i]);
+      }
 
-        // Create new xdp_buff pointing to copied data
+      /* Loop 3: memcpy */
+      for (int i = 0; i < num_copy; i++)
+        memcpy(copy_va[i], va, rx_headroom + cqe_bcnt);
+
+      /* Loop 4: init xdp_buff */
+      for (int i = 0; i < num_copy; i++) {
         xdp_init_buff(&copy_xdp[i], rq->buff.frame0_sz, &rq->xdp_rxq);
         xdp_prepare_buff(&copy_xdp[i], copy_va[i], rx_headroom, cqe_bcnt, true);
       }
+
+      // for (int i = 0; i < num_copy; i++) {
+
+      //   page[i] = page_pool_dev_alloc_pages(rq->page_pool);
+      //   if (!page[i]) {
+      //     trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+      //     rq->stats->xdp_drop++;
+      //     return NULL;
+      //   }
+
+      //   // Copy packet data to new buffer
+      //   copy_va[i] = page_address(page[i]);
+      //   __builtin_memcpy(copy_va[i], va, rx_headroom + cqe_bcnt);
+
+      //   // Create new xdp_buff pointing to copied data
+      //   xdp_init_buff(&copy_xdp[i], rq->buff.frame0_sz, &rq->xdp_rxq);
+      //   xdp_prepare_buff(&copy_xdp[i], copy_va[i], rx_headroom, cqe_bcnt,
+      //   true);
+      // }
+
       for (int i = 0; i < num_copy; i++) {
         int __num_copy = i + 1;
         if (unlikely(
@@ -1965,14 +2116,16 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
           // TODO: optimize by avoiding skb allocation when possible and
           // reusing the same skb for all copies but Marco said that
           // without this huge buffer the kernel crashes
-          skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
+
+          // skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
+          skbcpy = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
           if (unlikely(!skbcpy)) {
             rq->stats->buff_alloc_err++;
             break;
           }
 
           skb_reserve(skbcpy, rx_headroom);
-          skb_put_data(skbcpy, data, cqe_bcnt);
+          skb_put_data(skbcpy, copy_xdp[i].data, cqe_bcnt);
 
           if (metasize)
             skb_metadata_set(skbcpy, metasize);
@@ -1991,6 +2144,8 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
             napi_gro_receive(rq->cq.napi, skbcpy);
           }
+          if (copy_va[i])
+            page_pool_unref_page(page[i], 1);
         } break;
         case XDP_TX: {
           // page_pool_ref_page(frag_page->page);
@@ -2015,6 +2170,10 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         }
         case XDP_ABORTED:
         xdp_clone_tx_abort_cpy:
+          for (int i = 0; i < num_copy; i++) {
+            if (copy_va[i])
+              page_pool_unref_page(page[i], 1);
+          }
           trace_xdp_exception(rq->netdev, prog, actcpy);
           fallthrough;
         case XDP_DROP:
@@ -2023,6 +2182,16 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         }
       }
     xdp_clone_tx_exit:
+      // end_time = ktime_get();
+      // elapsed = ktime_sub(end_time, start_time);
+      // elapsed_ns = ktime_to_ns(elapsed);
+
+      // Only print if elapsed time is > 1 microsecond
+      // if (elapsed_ns > 1000) {
+      // trace_printk("mlx5e_skb_from_cqe_linear took %lld ns (%lld.%03lld
+      // µs)\n",
+      //              elapsed_ns, elapsed_ns / 1000, elapsed_ns % 1000);
+      // }
       return NULL;
     }
     case XDP_PASS:

@@ -1,0 +1,41 @@
+[19:33:08] === 01_hw_counters starting ===
+[19:33:08]   IFACE=enp52s0f1np1  PEER=192.168.101.2  DURATION=10s  PARALLEL=4
+[env] Snapshot → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results/env.json
+[0;32m[ OK ][0m  Link enp52s0f1np1 is up
+[0;32m[ OK ][0m  Peer 192.168.101.2 is reachable
+[0;34m[INFO][0m  Setting CPU governor → performance...
+[0;34m[INFO][0m  Disabling turbo boost...
+[0;34m[INFO][0m  Stopping irqbalance...
+[0;33m[WARN][0m  Could not stop irqbalance — IRQ migrations may affect results
+[0;34m[INFO][0m  Disabling ASLR...
+[0;32m[ OK ][0m  CPU isolation active
+[0;34m[INFO][0m  Pinning enp52s0f1np1 IRQs → NUMA-0 CPUs (0-15)...
+[0;32m[ OK ][0m  Pinned 0 IRQs (affinity mask=0xffff)
+[0;34m[INFO][0m  Capturing baseline counters (T0)...
+[0;32m[ OK ][0m  T0 → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results/counters_t0.txt
+[0;34m[INFO][0m  Starting TRex flood (10s) → 192.168.101.2 ...
+Traceback (most recent call last):
+  File "/mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/trex_run.py", line 6, in <module>
+    from trex_runner import TRexRunner
+  File "/mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/lib/trex_runner.py", line 24, in <module>
+    from src.orchestrator import TRexOrchestrator
+ModuleNotFoundError: No module named 'src'
+[0;33m[WARN][0m  TRex exited non-zero — check /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results
+[0;32m[ OK ][0m  TRex flood finished
+[0;34m[INFO][0m  Capturing counters after traffic (T1)...
+[0;32m[ OK ][0m  T1 → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results/counters_t1.txt
+[0;34m[INFO][0m  Running collect.py...
+[collect] Parsed 1925 counters
+[collect] Zero→non-zero events : 0
+[collect] Total drops (delta)  : 0
+[collect] Result → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results/result.json
+[0;34m[INFO][0m  Running report.py...
+[baseline] Saved → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/baseline.json
+[report] No baseline found — saving current run as baseline.
+[report] Written → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/REPORT.md
+[report] Status: BASELINE | Regressions: 0
+[0;34m[INFO][0m  Restoring CPU governor → ondemand...
+[0;32m[ OK ][0m  CPU isolation restored
+[19:33:11] === 01_hw_counters complete ===
+[19:33:11]   Results : /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results
+[19:33:11]   Report  : /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/REPORT.md
