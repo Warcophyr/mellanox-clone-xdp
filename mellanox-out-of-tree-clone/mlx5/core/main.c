@@ -85,6 +85,11 @@ module_param_named(debug_mask, mlx5_core_debug_mask, uint, 0644);
 MODULE_PARM_DESC(debug_mask, "debug mask: 1 = dump cmd data, 2 = dump cmd exec "
                              "time, 3 = both. Default=0");
 
+unsigned int mlx5_debug;
+EXPORT_SYMBOL(mlx5_debug);
+module_param_named(debug, mlx5_debug, uint, 0644);
+MODULE_PARM_DESC(debug, "enable debug printk (e.g. insmod mlx5_core.ko debug=1). Default=0");
+
 static unsigned int prof_sel = MLX5_DEFAULT_PROF;
 module_param_named(prof_sel, prof_sel, uint, 0444);
 MODULE_PARM_DESC(prof_sel, "profile selector. Valid range 0 - 2");

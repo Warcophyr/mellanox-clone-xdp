@@ -763,6 +763,8 @@ struct mlx5e_channel {
 
   /* XDP_REDIRECT */
   struct mlx5e_xdpsq xdpsq;
+  /* Second XDP TX queue (priority) */
+  struct mlx5e_xdpsq sq_prio;
 
   /* AF_XDP zero-copy */
   struct mlx5e_rq xskrq;

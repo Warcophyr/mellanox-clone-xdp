@@ -44,6 +44,7 @@
 #include "lib/devcom.h"
 
 extern uint mlx5_core_debug_mask;
+extern unsigned int mlx5_debug;
 
 #define mlx5_core_dbg(__dev, format, ...)				\
 	dev_dbg((__dev)->device, "%s:%d:(pid %d): " format,		\

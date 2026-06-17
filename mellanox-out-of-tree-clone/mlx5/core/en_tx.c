@@ -172,7 +172,10 @@ static inline int mlx5e_txwqe_build_dsegs(struct mlx5e_txqsq *sq,
   u8 num_dma = 0;
   int i;
 
-  printk(KERN_INFO "headlen = %u\n", headlen);
+  //echo 1 | sudo tee /sys/module/mlx5_core/parameters/debug
+  if (mlx5_debug) 
+    printk(KERN_INFO "headlen = %u\n", headlen);
+  
   if (headlen) {
     dma_addr = dma_map_single(sq->pdev, skb_data, headlen, DMA_TO_DEVICE);
     if (unlikely(dma_mapping_error(sq->pdev, dma_addr)))
@@ -404,46 +407,50 @@ static inline void mlx5e_txwqe_complete(
   struct mlx5_wqe_data_seg *dseg =
       container_of(eseg, struct mlx5e_tx_wqe, eth)->data;
   u16 *temp = (u16 *)cseg;
-  printk(KERN_INFO "Raw WQE content: \n");
-  for (int i = -2; i < 16; i++) {
-    if (i == 0 || i == 6)
-      printk(KERN_INFO "********************************");
-    printk(KERN_INFO "%04x %04x %04x %04x %04x %04x %04x %04x ",
-           temp[0 + i * 8], temp[1 + 8 * i], temp[2 + 8 * i], temp[3 + 8 * i],
-           temp[4 + 8 * i], temp[5 + 8 * i], temp[6 + 8 * i], temp[7 + 8 * i]);
-  }
-  printk(KERN_INFO "WQE cseg content: \n");
-  printk(KERN_INFO "opmod_idx_opcode: %08x\n",
-         be32_to_cpu(cseg->opmod_idx_opcode));
-  printk(KERN_INFO "qpn_ds: %08x\n", be32_to_cpu(cseg->qpn_ds));
-  printk(KERN_INFO "signature: %02x\n", cseg->signature);
-  printk(KERN_INFO "fm_ce_se: %02x\n", cseg->fm_ce_se);
-  printk(KERN_INFO "general_id: %08x\n", be32_to_cpu(cseg->general_id));
-  printk(KERN_INFO "WQE eseg content: \n");
-  printk(KERN_INFO "mss: %04x\n", be16_to_cpu(eseg->mss));
-  printk(KERN_INFO "cs_flags: %02x\n", eseg->cs_flags);
-  printk(KERN_INFO "insert.type: %04x\n", be16_to_cpu(eseg->insert.type));
-  printk(KERN_INFO "insert.vlan_tci: %04x\n",
-         be16_to_cpu(eseg->insert.vlan_tci));
-  printk(KERN_INFO "inline_hdr.sz: %04x\n", be16_to_cpu(eseg->inline_hdr.sz));
-  printk(KERN_INFO "flow_table_metadata: %08x\n ",
-         be32_to_cpu(eseg->flow_table_metadata));
-  printk(KERN_INFO "WQE dseg content: \n");
-  printk(KERN_INFO "addr: %016llx\n", be64_to_cpu(dseg->addr));
-  printk(KERN_INFO "lkey: %08x\n", be32_to_cpu(dseg->lkey));
-  printk(KERN_INFO "byte_count: %08x\n", be32_to_cpu(dseg->byte_count));
-  printk(KERN_INFO "WQ Info: \n");
-  printk(KERN_INFO "num_bytes: %u", wi->num_bytes);
-  printk(KERN_INFO "num_dma: %u\n", wi->num_dma);
-  printk(KERN_INFO "num_wqebbs: %u\n", wi->num_wqebbs);
-  printk(KERN_INFO "num_fifo_pkts: %u\n", wi->num_fifo_pkts);
+  
+  //echo 1 | sudo tee /sys/module/mlx5_core/parameters/debug
+  if (mlx5_debug) {
+    printk(KERN_INFO "Raw WQE content: \n");
+    for (int i = -2; i < 16; i++) {
+      if (i == 0 || i == 6)
+        printk(KERN_INFO "********************************");
+      printk(KERN_INFO "%04x %04x %04x %04x %04x %04x %04x %04x ",
+              temp[0 + i * 8], temp[1 + 8 * i], temp[2 + 8 * i], temp[3 + 8 * i],
+              temp[4 + 8 * i], temp[5 + 8 * i], temp[6 + 8 * i], temp[7 + 8 * i]);
+    }
+    printk(KERN_INFO "WQE cseg content: \n");
+    printk(KERN_INFO "opmod_idx_opcode: %08x\n",
+            be32_to_cpu(cseg->opmod_idx_opcode));
+    printk(KERN_INFO "qpn_ds: %08x\n", be32_to_cpu(cseg->qpn_ds));
+    printk(KERN_INFO "signature: %02x\n", cseg->signature);
+    printk(KERN_INFO "fm_ce_se: %02x\n", cseg->fm_ce_se);
+    printk(KERN_INFO "general_id: %08x\n", be32_to_cpu(cseg->general_id));
+    printk(KERN_INFO "WQE eseg content: \n");
+    printk(KERN_INFO "mss: %04x\n", be16_to_cpu(eseg->mss));
+    printk(KERN_INFO "cs_flags: %02x\n", eseg->cs_flags);
+    printk(KERN_INFO "insert.type: %04x\n", be16_to_cpu(eseg->insert.type));
+    printk(KERN_INFO "insert.vlan_tci: %04x\n",
+            be16_to_cpu(eseg->insert.vlan_tci));
+    printk(KERN_INFO "inline_hdr.sz: %04x\n", be16_to_cpu(eseg->inline_hdr.sz));
+    printk(KERN_INFO "flow_table_metadata: %08x\n ",
+            be32_to_cpu(eseg->flow_table_metadata));
+    printk(KERN_INFO "WQE dseg content: \n");
+    printk(KERN_INFO "addr: %016llx\n", be64_to_cpu(dseg->addr));
+    printk(KERN_INFO "lkey: %08x\n", be32_to_cpu(dseg->lkey));
+    printk(KERN_INFO "byte_count: %08x\n", be32_to_cpu(dseg->byte_count));
+    printk(KERN_INFO "WQ Info: \n");
+    printk(KERN_INFO "num_bytes: %u", wi->num_bytes);
+    printk(KERN_INFO "num_dma: %u\n", wi->num_dma);
+    printk(KERN_INFO "num_wqebbs: %u\n", wi->num_wqebbs);
+    printk(KERN_INFO "num_fifo_pkts: %u\n", wi->num_fifo_pkts);
 
-  printk(KERN_INFO "eseg position relative to cseg: %lu\n",
-         (unsigned long)eseg - (unsigned long)cseg);
-  printk(KERN_INFO "dseg true position relative to cseg: %lu\n",
-         (unsigned long)(dseg) - (unsigned long)cseg);
-  printk(KERN_INFO "dseg false position relative to cseg: %lu\n",
-         (unsigned long)(eseg + wqe_attr->ds_cnt_inl) - (unsigned long)cseg);
+    printk(KERN_INFO "eseg position relative to cseg: %lu\n",
+            (unsigned long)eseg - (unsigned long)cseg);
+    printk(KERN_INFO "dseg true position relative to cseg: %lu\n",
+            (unsigned long)(dseg) - (unsigned long)cseg);
+    printk(KERN_INFO "dseg false position relative to cseg: %lu\n",
+            (unsigned long)(eseg + wqe_attr->ds_cnt_inl) - (unsigned long)cseg);
+  }
 
   send_doorbell = __netdev_tx_sent_queue(sq->txq, attr->num_bytes, xmit_more);
   if (send_doorbell)
@@ -896,9 +903,12 @@ bool mlx5e_poll_tx_cq(struct mlx5e_cq *cq, int napi_budget) {
       wi = &sq->db.wqe_info[ci];
 
       sqcc += wi->num_wqebbs;
-      printk(KERN_INFO "wqe_counter: %u, sqcc: %u, ci: %u\n", wqe_counter, sqcc,
+      //echo 1 | sudo tee /sys/module/mlx5_core/parameters/debug
+      if (mlx5_debug) {
+        printk(KERN_INFO "wqe_counter: %u, sqcc: %u, ci: %u\n", wqe_counter, sqcc,
              ci);
-      printk(KERN_INFO "num_wqebbs: %u\n", wi->num_wqebbs);
+        printk(KERN_INFO "num_wqebbs: %u\n", wi->num_wqebbs);
+      }
 
       if (likely(wi->skb)) {
         mlx5e_tx_wi_dma_unmap(sq, wi, &dma_fifo_cc);

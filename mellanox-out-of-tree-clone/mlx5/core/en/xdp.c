@@ -32,6 +32,7 @@
 
 #include "en/xdp.h"
 #include "en/params.h"
+#include "mlx5_core.h"
 #include <linux/bitfield.h>
 #include <linux/bpf_trace.h>
 #include <net/page_pool/helpers.h>
@@ -327,9 +328,11 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
   ((u32*) xdp->data_meta)[4] = (flow_tag <<8) + (0x0ff & l4_type);
     
   u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
-  printk(KERN_INFO "2 hash type: %d\n",htype);
-  printk(KERN_INFO "2 hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
-  pr_info("2 axdp: ft_metadata = 0x%x\n",cqe->ft_metadata);
+  if(mlx5_debug) {
+    printk(KERN_INFO "2 hash type: %d\n",htype);
+    printk(KERN_INFO "2 hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
+    pr_info("2 axdp: ft_metadata = 0x%x\n",cqe->ft_metadata);
+  }
     		
   act = bpf_prog_run_xdp(prog, xdp);
   switch (act) {
@@ -566,9 +569,11 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
   u32 inline_hdr_size = *(header_xdp);
   header_xdp++;
 
-  pr_info("%s inside function", __FUNCTION__);
-  printk(KERN_INFO "--> flow_table_metadata = %d\n", flow_table_metadata);
-  printk(KERN_INFO "--> inline_hdr_size = %d\n", inline_hdr_size);
+  if (mlx5_debug) {
+    pr_info("%s inside function", __FUNCTION__);
+    printk(KERN_INFO "--> flow_table_metadata = %d\n", flow_table_metadata);
+    printk(KERN_INFO "--> inline_hdr_size = %d\n", inline_hdr_size);
+  }
 
   struct mlx5e_xdpsq_stats *stats = sq->stats;
 
@@ -609,7 +614,8 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
 
   // ANDREA
   num_wqebbs = ((46 + inline_hdr_size) / 64) + 1;
-  printk(KERN_INFO "num_wqebbs = %d, ds_cnt = %d, inline_hdr_size = %d\n",
+  if (mlx5_debug)
+    printk(KERN_INFO "num_wqebbs = %d, ds_cnt = %d, inline_hdr_size = %d\n",
          num_wqebbs, ds_cnt, inline_hdr_size);
 
   pi = mlx5e_xdpsq_get_next_pi(sq, num_wqebbs);
@@ -621,18 +627,22 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
   dseg = wqe->data;
 
   uint16_t *temp = (u16 *)cseg;
-  printk(KERN_INFO "Raw WQE AT FUNC BEGINNING content: \n");
-  for (int i = -4; i < 16; i++) {
-    if (i == 0 || i == 6)
-      printk(KERN_INFO "********************************");
-    printk(KERN_INFO "%04x %04x %04x %04x %04x %04x %04x %04x ",
-           temp[0 + i * 8], temp[1 + 8 * i], temp[2 + 8 * i], temp[3 + 8 * i],
-           temp[4 + 8 * i], temp[5 + 8 * i], temp[6 + 8 * i], temp[7 + 8 * i]);
+  if (mlx5_debug) {
+    printk(KERN_INFO "Raw WQE AT FUNC BEGINNING content: \n");
+    for (int i = -4; i < 16; i++) {
+      if (i == 0 || i == 6) {
+        printk(KERN_INFO "********************************");
+      }
+      printk(KERN_INFO "%04x %04x %04x %04x %04x %04x %04x %04x ",
+          temp[0 + i * 8], temp[1 + 8 * i], temp[2 + 8 * i], temp[3 + 8 * i],
+          temp[4 + 8 * i], temp[5 + 8 * i], temp[6 + 8 * i], temp[7 + 8 * i]);
+    }
   }
 
   /* copy the inline part if required */
   if (inline_hdr_sz) {
-    printk(KERN_INFO "%s: copying inline header", __FUNCTION__);
+    if (mlx5_debug) 
+      printk(KERN_INFO "%s: copying inline header", __FUNCTION__);
     memcpy(eseg->inline_hdr.start, xdptxd->data,
            sizeof(eseg->inline_hdr.start));
     memcpy(dseg, xdptxd->data + sizeof(eseg->inline_hdr.start),
@@ -695,7 +705,8 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
     int i;
 
     memset(&cseg->trailer, 0, sizeof(cseg->trailer));
-    printk(KERN_INFO "Preparing MPWQE WQE\n");
+    if (mlx5_debug) 
+      printk(KERN_INFO "Preparing MPWQE WQE\n");
     memset(eseg, 0, sizeof(*eseg) - sizeof(eseg->trailer));
 
     eseg->inline_hdr.sz = cpu_to_be16(inline_hdr_sz);
@@ -723,7 +734,8 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
 
     sq->pc += num_wqebbs;
   } else {
-    printk(KERN_INFO "Preparing regular WQE\n");
+    if (mlx5_debug)
+      printk(KERN_INFO "Preparing regular WQE\n");
     cseg->fm_ce_se = 0;
     // if (xdptxd->has_inline) {
     //   cseg->qpn_ds = cpu_to_be32((sq->sqn << 8) | (6));
@@ -745,47 +757,48 @@ mlx5e_xmit_xdp_frame(struct mlx5e_xdpsq *sq, struct mlx5e_xmit_data *xdptxd,
     };
   }
   // ANDREA
-  printk(KERN_INFO "Raw WQE JUST BEFORE DOORBELL content: \n");
-  for (int i = -4; i < 16; i++) {
-    if (i == 0 || i == 6)
-      printk(KERN_INFO "********************************");
-    printk(KERN_INFO "%04x %04x %04x %04x %04x %04x %04x %04x ",
-           temp[0 + i * 8], temp[1 + 8 * i], temp[2 + 8 * i], temp[3 + 8 * i],
-           temp[4 + 8 * i], temp[5 + 8 * i], temp[6 + 8 * i], temp[7 + 8 * i]);
-  }
-  printk(KERN_INFO "WQE cseg content: \n");
-  printk(KERN_INFO "opmod_idx_opcode: %08x\n",
-         be32_to_cpu(cseg->opmod_idx_opcode));
-  printk(KERN_INFO "qpn_ds: %08x\n", be32_to_cpu(cseg->qpn_ds));
-  printk(KERN_INFO "signature: %02x\n", cseg->signature);
-  printk(KERN_INFO "fm_ce_se: %02x\n", cseg->fm_ce_se);
-  printk(KERN_INFO "general_id: %08x\n", be32_to_cpu(cseg->general_id));
-  printk(KERN_INFO "WQE eseg content: \n");
-  printk(KERN_INFO "mss: %04x\n", be16_to_cpu(eseg->mss));
-  printk(KERN_INFO "cs_flags: %02x\n", eseg->cs_flags);
-  printk(KERN_INFO "insert.type: %04x\n", be16_to_cpu(eseg->insert.type));
-  printk(KERN_INFO "insert.vlan_tci: %04x\n",
-         be16_to_cpu(eseg->insert.vlan_tci));
-  printk(KERN_INFO "inline_hdr.sz: %04x\n", be16_to_cpu(eseg->inline_hdr.sz));
-  printk(KERN_INFO "flow_table_metadata: %08x\n",
-         be32_to_cpu(eseg->flow_table_metadata));
-  printk(KERN_INFO "WQE dseg content: \n");
-  printk(KERN_INFO "addr: %016llx\n", be64_to_cpu((dseg - 1)->addr));
-  printk(KERN_INFO "lkey: %08x\n", be32_to_cpu((dseg - 1)->lkey));
-  printk(KERN_INFO "byte_count: %08x\n", be32_to_cpu((dseg - 1)->byte_count));
-  // printk(KERN_INFO "WQ Info: \n");
-  // printk(KERN_INFO "num_bytes: %u", wi->num_bytes);
-  // printk(KERN_INFO "num_dma: %u\n", wi->num_dma);
-  // printk(KERN_INFO "num_wqebbs: %u\n", wi->num_wqebbs);
-  // printk(KERN_INFO "num_fifo_pkts: %u\n", wi->num_fifo_pkts);
+  if (mlx5_debug) {
+    printk(KERN_INFO "Raw WQE JUST BEFORE DOORBELL content: \n");
+    for (int i = -4; i < 16; i++) {
+      if (i == 0 || i == 6)
+        printk(KERN_INFO "********************************");
+      printk(KERN_INFO "%04x %04x %04x %04x %04x %04x %04x %04x ",
+            temp[0 + i * 8], temp[1 + 8 * i], temp[2 + 8 * i], temp[3 + 8 * i],
+            temp[4 + 8 * i], temp[5 + 8 * i], temp[6 + 8 * i], temp[7 + 8 * i]);
+    }
+    printk(KERN_INFO "WQE cseg content: \n");
+    printk(KERN_INFO "opmod_idx_opcode: %08x\n",
+          be32_to_cpu(cseg->opmod_idx_opcode));
+    printk(KERN_INFO "qpn_ds: %08x\n", be32_to_cpu(cseg->qpn_ds));
+    printk(KERN_INFO "signature: %02x\n", cseg->signature);
+    printk(KERN_INFO "fm_ce_se: %02x\n", cseg->fm_ce_se);
+    printk(KERN_INFO "general_id: %08x\n", be32_to_cpu(cseg->general_id));
+    printk(KERN_INFO "WQE eseg content: \n");
+    printk(KERN_INFO "mss: %04x\n", be16_to_cpu(eseg->mss));
+    printk(KERN_INFO "cs_flags: %02x\n", eseg->cs_flags);
+    printk(KERN_INFO "insert.type: %04x\n", be16_to_cpu(eseg->insert.type));
+    printk(KERN_INFO "insert.vlan_tci: %04x\n",
+          be16_to_cpu(eseg->insert.vlan_tci));
+    printk(KERN_INFO "inline_hdr.sz: %04x\n", be16_to_cpu(eseg->inline_hdr.sz));
+    printk(KERN_INFO "flow_table_metadata: %08x\n",
+          be32_to_cpu(eseg->flow_table_metadata));
+    printk(KERN_INFO "WQE dseg content: \n");
+    printk(KERN_INFO "addr: %016llx\n", be64_to_cpu((dseg - 1)->addr));
+    printk(KERN_INFO "lkey: %08x\n", be32_to_cpu((dseg - 1)->lkey));
+    printk(KERN_INFO "byte_count: %08x\n", be32_to_cpu((dseg - 1)->byte_count));
+    // printk(KERN_INFO "WQ Info: \n");
+    // printk(KERN_INFO "num_bytes: %u", wi->num_bytes);
+    // printk(KERN_INFO "num_dma: %u\n", wi->num_dma);
+    // printk(KERN_INFO "num_wqebbs: %u\n", wi->num_wqebbs);
+    // printk(KERN_INFO "num_fifo_pkts: %u\n", wi->num_fifo_pkts);
 
-  printk(KERN_INFO "eseg position relative to cseg: 0x%lx\n",
-         (unsigned long)eseg - (unsigned long)cseg);
-  printk(KERN_INFO "dseg true position relative to cseg: 0x%lx\n",
-         (unsigned long)(dseg) - (unsigned long)cseg);
-  // printk(KERN_INFO "dseg false position relative to cseg: %lu\n",
-  //        (unsigned long)(eseg + wqe_attr->ds_cnt_inl) - (unsigned long)cseg);
-
+    printk(KERN_INFO "eseg position relative to cseg: 0x%lx\n",
+          (unsigned long)eseg - (unsigned long)cseg);
+    printk(KERN_INFO "dseg true position relative to cseg: 0x%lx\n",
+          (unsigned long)(dseg) - (unsigned long)cseg);
+    // printk(KERN_INFO "dseg false position relative to cseg: %lu\n",
+    //        (unsigned long)(eseg + wqe_attr->ds_cnt_inl) - (unsigned long)cseg);
+  }    
   xsk_tx_metadata_request(meta, &mlx5e_xsk_tx_metadata_ops, eseg);
 
   sq->doorbell_cseg = cseg;
@@ -888,7 +901,9 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq) {
   int i;
 
   // ANDREA
-  printk(KERN_INFO "start mlx5e_poll_xdpsq_cq\n");
+  //echo 1 | sudo tee /sys/module/mlx5_core/parameters/debug
+  if (mlx5_debug)
+    printk(KERN_INFO "start mlx5e_poll_xdpsq_cq\n");
 
   xdp_frame_bulk_init(&bq);
 
@@ -921,11 +936,8 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq) {
       wi = &sq->db.wqe_info[ci];
 
       sqcc += wi->num_wqebbs;
-      printk(KERN_INFO "wi->num_wqebbs = %d\n", wi->num_wqebbs);
-
-      printk(KERN_INFO "before free\n");
+      
       mlx5e_free_xdpsq_desc(sq, wi, &xsk_frames, &bq, cq, cqe);
-      printk(KERN_INFO "after free\n");
     } while (!last_wqe);
 
     if (unlikely(get_cqe_opcode(cqe) != MLX5_CQE_REQ)) {
@@ -938,10 +950,8 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq) {
   } while ((++i < MLX5E_TX_CQ_POLL_BUDGET) &&
            (cqe = mlx5_cqwq_get_cqe(&cq->wq)));
 
-  printk(KERN_INFO "end loop\n");
   xdp_flush_frame_bulk(&bq);
-  printk(KERN_INFO "end flush\n");
-
+  
   if (xsk_frames)
     xsk_tx_completed(sq->xsk_pool, xsk_frames);
 
@@ -953,9 +963,7 @@ bool mlx5e_poll_xdpsq_cq(struct mlx5e_cq *cq) {
   wmb();
 
   sq->cc = sqcc;
-  // ANDREA
-  printk(KERN_INFO "end mlx5e_poll_xdpsq_cq\n");
-
+  
   return (i == MLX5E_TX_CQ_POLL_BUDGET);
 }
 

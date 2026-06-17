@@ -47,6 +47,7 @@
 #include "en_tc.h"
 #include "eswitch.h"
 #include "ipoib/ipoib.h"
+#include "mlx5_core.h"
 #include <linux/bitmap.h>
 #include <linux/filter.h>
 #include <linux/ip.h>
@@ -1629,7 +1630,8 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   dma_addr_t dma_addr;
   int i;
 
-  pr_alert("%s: called!\n", __FUNCTION__);
+  if (mlx5_debug)
+    pr_alert("%s: called!\n", __FUNCTION__);
 
   xdpf = xdp_convert_buff_to_frame(xdp);
   if (unlikely(!xdpf))
@@ -1699,7 +1701,8 @@ static inline bool mlx5e_xmit_xdp_buff(struct mlx5e_xdpsq *sq,
   dma_sync_single_for_device(sq->pdev, dma_addr, xdptxd->len,
                              DMA_BIDIRECTIONAL);
 
-  printk(KERN_INFO "xdptxd->has_frags = %d\n", xdptxd->has_frags);
+  if (mlx5_debug)
+    printk(KERN_INFO "xdptxd->has_frags = %d\n", xdptxd->has_frags);
   if (xdptxd->has_frags) {
     xdptxdf.sinfo = xdp_get_shared_info_from_frame(xdpf);
     xdptxdf.dma_arr = NULL;
@@ -1770,7 +1773,8 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
   u32 frag_size;
   const int XDP_CLONE_PASS = 5;
   const int XDP_CLONE_TX = 6;
-  pr_info("%s: called\n", __FUNCTION__);
+  if(mlx5_debug)
+    pr_info("%s: called\n", __FUNCTION__);
 
   va = page_address(frag_page->page) + wi->offset;
   data = va + rx_headroom;

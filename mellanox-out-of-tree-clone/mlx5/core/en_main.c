@@ -2372,10 +2372,15 @@ static int mlx5e_open_queues(struct mlx5e_channel *c,
 	if (err)
 		goto err_close_tx_cqs;
 
+	err = mlx5e_open_cq(c->mdev, params->tx_cq_moderation, &cparam->xdp_sq.cqp, &ccp,
+			    &c->sq_prio.cq);
+	if (err)
+		goto err_close_xdp_tx_cqs;
+
 	err = mlx5e_open_cq(c->mdev, params->rx_cq_moderation, &cparam->rq.cqp, &ccp,
 			    &c->rq.cq);
 	if (err)
-		goto err_close_xdp_tx_cqs;
+		goto err_close_sq_prio_cq;
 
 	err = c->xdp ? mlx5e_open_cq(c->mdev, params->tx_cq_moderation, &cparam->xdp_sq.cqp,
 				     &ccp, &c->rq_xdpsq.cq) : 0;
@@ -2415,7 +2420,14 @@ static int mlx5e_open_queues(struct mlx5e_channel *c,
 	if (err)
 		goto err_close_xdp_sq;
 
+	err = mlx5e_open_xdpsq(c, params, &cparam->xdp_sq, NULL, &c->sq_prio, true);
+	if (err)
+		goto err_close_sq_prio;
+
 	return 0;
+
+err_close_sq_prio:
+	mlx5e_close_xdpsq(&c->xdpsq);
 
 err_close_xdp_sq:
 	if (c->xdp)
@@ -2440,6 +2452,9 @@ err_close_xdpsq_cq:
 err_close_rx_cq:
 	mlx5e_close_cq(&c->rq.cq);
 
+err_close_sq_prio_cq:
+	mlx5e_close_cq(&c->sq_prio.cq);
+
 err_close_xdp_tx_cqs:
 	mlx5e_close_cq(&c->xdpsq.cq);
 
@@ -2457,6 +2472,7 @@ err_close_async_icosq_cq:
 
 static void mlx5e_close_queues(struct mlx5e_channel *c)
 {
+	mlx5e_close_xdpsq(&c->sq_prio);
 	mlx5e_close_xdpsq(&c->xdpsq);
 	if (c->xdp)
 		mlx5e_close_xdpsq(&c->rq_xdpsq);
@@ -2470,6 +2486,7 @@ static void mlx5e_close_queues(struct mlx5e_channel *c)
 	if (c->xdp)
 		mlx5e_close_cq(&c->rq_xdpsq.cq);
 	mlx5e_close_cq(&c->rq.cq);
+	mlx5e_close_cq(&c->sq_prio.cq);
 	mlx5e_close_cq(&c->xdpsq.cq);
 	mlx5e_close_tx_cqs(c);
 	mlx5e_close_cq(&c->icosq.cq);
