@@ -34,7 +34,7 @@ attach-tx_header:
 
 attach-tx_metadata_flow:
 	sudo bpftool prog load  tx_metadata_flow.bpf.o /sys/fs/bpf/tx_metadata_flow
-	sudo bpftool net attach xdpdrv name xdptx_metadata_ dev ${ETH}
+	sudo bpftool net attach xdpdrv name xdptx_metadata_flow dev ${ETH}
 
 detach-tx_metadata_flow:
 	sudo bpftool net detach xdpdrv dev ${ETH}

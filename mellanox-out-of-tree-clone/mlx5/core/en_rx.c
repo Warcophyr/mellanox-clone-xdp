@@ -1807,8 +1807,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     u16 flow_tag = get_cqe_flow_tag(cqe);
     ((u32*) mxbuf.xdp.data_meta)[4] = (flow_tag <<8) + (0x0ff & l4_type);
     
-    
-    //pr_info("added rx metadata\n");
+    pr_info("axdp: ft_metadata = 0x%x\n",cqe->ft_metadata);
     //u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
     //printk(KERN_INFO "hash type: %d\n",htype);
     //printk(KERN_INFO "hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));

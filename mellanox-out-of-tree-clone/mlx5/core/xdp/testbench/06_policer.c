@@ -48,6 +48,8 @@ int xdp_policer(struct xdp_md *ctx)
 	if (bpf_xdp_axdp_rx_byte_count(ctx, &len) != 0)
 		len = data_end - data;      /* fallback */
 
+	// posso prendere direttamente b dal metadata!
+	// usando una mappa array ?
 	struct bucket *b = bpf_map_lookup_elem(&buckets, &class);
 	if (!b) {
 		struct bucket nb = { .tokens = BURST_BYTES, .last_ts = now };

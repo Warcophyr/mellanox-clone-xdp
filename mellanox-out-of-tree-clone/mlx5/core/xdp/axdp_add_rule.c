@@ -7,6 +7,7 @@
  *
  * Usage:
  *   ./axdp_add_rule tx <meta_tag_hex>    # DROP packets whose WQE reg_a == tag
+ *   ./axdp_add_rule vlan <meta_tag_hex> <vid>  # push C-VLAN <vid> when reg_a == tag
  *   ./axdp_add_rule rx <dst_ipv4>        # legacy: DROP ingress packets to dst IP
  *   ./axdp_add_rule rx [5-tuple flags]   # DROP ingress packets matching the tuple
  *   ./axdp_add_rule del-tx <index>       # remove a TX rule by its index
@@ -18,14 +19,17 @@
  *   --proto <tcp|udp|N>    L4 protocol (name or number)
  *   --sport <port>         L4 source port      (requires tcp/udp)
  *   --dport <port>         L4 destination port (requires tcp/udp)
- *   --action <drop|pass>   verdict for matching packets (default drop)
+ *   --action <drop|pass|mark>  verdict for matching packets (default drop)
+ *   --mark <hex32>         32-bit value written to REG_B (implies --action mark)
  *
  * Examples:
  *   ./axdp_add_rule tx 0x2a2a2a2a
+ *   ./axdp_add_rule vlan 0x2a2a2a2a 100
  *   ./axdp_add_rule rx 204.71.200.129
  *   ./axdp_add_rule rx --dip 172.16.112.100 --proto tcp --dport 80
  *   ./axdp_add_rule rx --sip 10.0.0.1 --dip 10.0.0.2 --proto udp --sport 53 --dport 5353
  *   ./axdp_add_rule rx --dip 10.0.0.2 --proto tcp --dport 443 --action pass
+ *   ./axdp_add_rule rx --dip 10.0.0.2 --proto tcp --dport 443 --mark 0xdeadbeef
  *   ./axdp_add_rule del-tx 0
  *   ./axdp_add_rule del-rx 0
  */
@@ -48,12 +52,14 @@ static void usage(const char *prog)
 	fprintf(stderr,
 		"usage:\n"
 		"  %s tx <meta_tag_hex>\n"
+		"  %s vlan <meta_tag_hex> <vid>\n"
 		"  %s rx <dst_ipv4>\n"
 		"  %s rx [--sip <ipv4>] [--dip <ipv4>] [--proto <tcp|udp|N>]"
-		" [--sport <port>] [--dport <port>] [--action <drop|pass>]\n"
+		" [--sport <port>] [--dport <port>] [--action <drop|pass|mark>]"
+		" [--mark <hex32>]\n"
 		"  %s del-tx <index>\n"
 		"  %s del-rx <index>\n",
-		prog, prog, prog, prog, prog);
+		prog, prog, prog, prog, prog, prog);
 }
 
 /* Parse a dotted-quad into network-order 32-bit. Returns 0 on success. */
@@ -126,10 +132,16 @@ static int parse_rx_tuple(int argc, char **argv, struct axdp_ioctl_rule *req)
 				req->action = AXDP_RX_DROP;
 			else if (strcmp(a, "pass") == 0)
 				req->action = AXDP_RX_PASS;
+			else if (strcmp(a, "mark") == 0)
+				req->action = AXDP_RX_MARK;
 			else {
-				fprintf(stderr, "invalid action '%s' (drop|pass)\n", a);
+				fprintf(stderr,
+					"invalid action '%s' (drop|pass|mark)\n", a);
 				return -1;
 			}
+		} else if (strcmp(argv[i], "--mark") == 0) {
+			req->mark = (__u32)strtoul(argv[++i], NULL, 0);
+			req->action = AXDP_RX_MARK;
 		} else {
 			fprintf(stderr, "unknown rx option '%s'\n", argv[i]);
 			return -1;
@@ -163,6 +175,23 @@ int main(int argc, char **argv)
 		cmd = AXDP_IOC_ADD_TX_RULE;
 		req.value = (unsigned int)strtoul(argv[2], NULL, 0);
 		req.value = htonl(req.value); /* kernel expects network byte order */
+	} else if (strcmp(argv[1], "vlan") == 0) {
+		unsigned long vid;
+
+		if (argc != 4) {
+			usage(argv[0]);
+			return 1;
+		}
+		cmd = AXDP_IOC_ADD_VLAN_RULE;
+		req.value = (unsigned int)strtoul(argv[2], NULL, 0);
+		req.value = htonl(req.value); /* same reg_a match as tx rules */
+
+		vid = strtoul(argv[3], NULL, 0);
+		if (vid > 0xfff) {
+			fprintf(stderr, "invalid vlan id %lu (0-4095)\n", vid);
+			return 1;
+		}
+		req.vid = (__u16)vid;
 	} else if (strcmp(argv[1], "rx") == 0) {
 		cmd = AXDP_IOC_ADD_RX_RULE;
 		if (argc == 3 && strncmp(argv[2], "--", 2) != 0) {

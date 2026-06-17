@@ -52,11 +52,14 @@ static __always_inline int axdp_emit(__u32 op, __u32 value)
 
 /*
  * Enqueue an ADD_RX rule matching the IPv4 5-tuple, with @action telling the
- * NIC what to do (AXDP_RX_DROP / AXDP_RX_PASS). All operands are in network
- * byte order; any field left 0 is a wildcard on the kernel side.
+ * NIC what to do (AXDP_RX_DROP / AXDP_RX_PASS) and @value carrying an
+ * action-specific operand (e.g. a redirect queue id; 0 if unused). All operands
+ * are in network byte order; any 5-tuple field left 0 is a wildcard on the
+ * kernel side.
  */
 static __always_inline int axdp_emit_rx5(__u32 sip, __u32 dip, __u8 proto,
-					 __u16 sport, __u16 dport, __u8 action)
+					 __u16 sport, __u16 dport, __u8 action,
+					 __u32 value)
 {
 	struct axdp_rb_event *ev;
 
@@ -71,6 +74,7 @@ static __always_inline int axdp_emit_rx5(__u32 sip, __u32 dip, __u8 proto,
 	ev->dst_port = dport;
 	ev->ip_proto = proto;
 	ev->action = action;
+	ev->value = value;
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
 }
@@ -89,7 +93,7 @@ int axdp_rb_producer(struct xdp_md *ctx)
 		 * (network order 0x5000). src IP / src port left 0 = wildcard. */
 		axdp_emit_rx5(0 /* sip */, 0x647010AC /* dip */, IPPROTO_TCP,
 			      0 /* sport */, bpf_htons(80) /* dport */,
-			      AXDP_RX_DROP);
+			      AXDP_RX_DROP, 0 /* value */);
 		emitted = 1;
 	}
 	return XDP_TX;

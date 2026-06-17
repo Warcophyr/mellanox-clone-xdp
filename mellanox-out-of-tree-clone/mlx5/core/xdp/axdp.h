@@ -6,6 +6,7 @@
 #include <bpf/bpf_helpers.h>
 
 #define AXDP_PASS 0x1
+#define METADATA_LEN 20
 
 /* Returns 0 on success with *ts filled, -1 on error. */
 static __always_inline __u64 meta_read_timestamp(struct xdp_md *ctx)
@@ -13,7 +14,7 @@ static __always_inline __u64 meta_read_timestamp(struct xdp_md *ctx)
 	__u8 *data_meta = (void *)(long)ctx->data_meta;
 	void *data      = (void *)(long)ctx->data;
     __u64 ts=0;
-	if ((void *)data_meta + 20 > data) {
+	if ((void *)data_meta + METADATA_LEN > data) {
 		bpf_printk("ts fallback: using bpf_ktime_get_ns\n");
 		return bpf_ktime_get_ns();
 	}
@@ -27,7 +28,7 @@ static __always_inline __u32 meta_read_hash(struct xdp_md *ctx)
 {
 	__u8 *data_meta = (void *)(long)ctx->data_meta;
 	void *data      = (void *)(long)ctx->data;
-	if ((void *)data_meta + 20 > data) {
+	if ((void *)data_meta + METADATA_LEN > data) {
 		/* No meta space — FNV-1a over IPv4 TCP/UDP 5-tuple, else 0 */
 		__u8 *pkt      = data;
 		void *data_end = (void *)(long)ctx->data_end;
@@ -118,12 +119,29 @@ static __always_inline __u32 l4type_fallback(struct xdp_md *ctx)
 	return 0; /* CQE_L4_HDR_TYPE_NONE */
 }
 
+
+/* Returns Flow Metadata */
+static __always_inline __u32 meta_read_ft_metadata(struct xdp_md *ctx)
+{
+	__u8 *data_meta = (void *)(long)ctx->data_meta;
+	void *data      = (void *)(long)ctx->data;
+	if ((void *)data_meta + METADATA_LEN > data) {
+		bpf_printk("flow_Tag fallback\n");
+		return 0;
+	}
+    __u32 *m = (__u32 *)data_meta;
+
+	return m[3];
+}
+
+
+
 /* Returns L4 type. */
 static __always_inline __u32 meta_read_l4type(struct xdp_md *ctx)
 {
 	__u8 *data_meta = (void *)(long)ctx->data_meta;
 	void *data      = (void *)(long)ctx->data;
-	if ((void *)data_meta + 20 > data) {
+	if ((void *)data_meta + METADATA_LEN > data) {
 		bpf_printk("l4 fallback: not IPv4, type=NONE\n");
 		return l4type_fallback(ctx);
 	}
@@ -132,12 +150,12 @@ static __always_inline __u32 meta_read_l4type(struct xdp_md *ctx)
 	return (0x0ff & m[4]);
 }
 
-/* Returns L4 type. */
+/* Returns Flow Tag. */
 static __always_inline __u32 meta_read_flow_tag(struct xdp_md *ctx)
 {
 	__u8 *data_meta = (void *)(long)ctx->data_meta;
 	void *data      = (void *)(long)ctx->data;
-	if ((void *)data_meta + 20 > data) {
+	if ((void *)data_meta + METADATA_LEN > data) {
 		bpf_printk("flow_Tag fallback\n");
 		return 0;
 	}

@@ -230,25 +230,25 @@ int xdp_tcp_firewall(struct xdp_md *ctx)
 
     // classification offload: if the NIC already tagged this flow as PASS and FIN|RST are not present, skip software processing.
     if (meta_read_flow_tag(ctx)==AXDP_PASS) 
-        return XDP_PASS;
+        return XDP_TX;
 
     if (parse_5tuple(data, data_end, &k) < 0)
-		return XDP_PASS;
+		return XDP_TX;
 
 	/* Use the NIC's L4 parse when available, else our software parse. */
     __u32 l4type= meta_read_l4type(ctx);
 	if ((l4type == 0) || (l4type==2)) //1,3, o 4 =TCP
-		return XDP_PASS;
+		return XDP_TX;
 
 	struct ethhdr *eth = data;
 	if ((void *)(eth + 1) > data_end)
-		return XDP_PASS;
+		return XDP_TX;
 	struct iphdr *iph = (void *)(eth + 1);
 	if ((void *)(iph + 1) > data_end)
-		return XDP_PASS;
+		return XDP_TX;
 	struct tcphdr *th = (void *)iph + iph->ihl * 4;
 	if ((void *)(th + 1) > data_end)
-		return XDP_PASS;
+		return XDP_TX;
 
 	int outbound = ip_is_inside(iph->saddr);
 
@@ -266,12 +266,12 @@ int xdp_tcp_firewall(struct xdp_md *ctx)
 		if (th->rst) {
 			bpf_printk("DEL rule NOT yet implemented!!! index=%u\n");
             //axdp_emit_del_rx(ct->index);
-			return XDP_PASS;
+			return XDP_TX;
 		}
 		if (th->fin) {
 			ct->state = CT_FIN;
 			ct->last_seen = now;
-			return XDP_PASS;
+			return XDP_TX;
 		}
 
 		/* SYN-ACK completes the handshake: now offload PASS to HW.
@@ -282,11 +282,11 @@ int xdp_tcp_firewall(struct xdp_md *ctx)
 			ct->last_seen = now;
 
 			axdp_emit_rx(&ck, AXDP_RX_PASS);
-            return XDP_PASS;
+            return XDP_TX;
 		}
 
 		ct->last_seen = now;
-		return XDP_PASS;
+		return XDP_TX;
 	}
 
 	/* ---- New connection ------------------------------------------- */
@@ -296,7 +296,7 @@ int xdp_tcp_firewall(struct xdp_md *ctx)
 	if (th->syn && !th->ack && outbound) {
 		struct ct_entry e = { .state = CT_SYN_SENT, .last_seen = now };
 		bpf_map_update_elem(&conntrack, &ck, &e, BPF_ANY);
-		return XDP_PASS;
+		return XDP_TX;
 	}
 
 	/* Unsolicited inbound (or untracked mid-stream): deny, and offload a

@@ -44,6 +44,25 @@ static long axdp_do_add_tx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 	return 0;
 }
 
+static long axdp_do_add_vlan(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
+{
+	int idx, err;
+
+	/*
+	 * VLAN-push rules live on the same EGRESS meta table as ADD_TX_RULE:
+	 * @value is the WQE metadata tag (reg_a) to match, @vid the C-VLAN id
+	 * to push. add_meta_vlan_rule() installs at n_rules and bumps it.
+	 */
+	idx = priv->tx_xdp_flow_ctx.n_rules;
+	err = add_meta_vlan_rule(priv->mdev, &priv->tx_xdp_flow_ctx,
+				 req->value, req->vid);
+	if (err)
+		return err;
+
+	req->index = idx;
+	return 0;
+}
+
 static long axdp_do_add_rx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 {
 	__be32 dip = (__be32)req->dst_ip;
@@ -60,7 +79,7 @@ static long axdp_do_add_rx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 	err = add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,
 			  (__be32)req->src_ip, dip, req->ip_proto,
 			  (__be16)req->src_port, (__be16)req->dst_port,
-			  req->action);
+			  req->action, req->mark);
 	if (err)
 		return err;
 
@@ -75,6 +94,8 @@ static long axdp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct mlx5e_priv *priv;
 	long ret;
 
+	pr_info("axdp: ioctl device /dev/%s command %d\n",AXDP_IOCTL_DEV_NAME, cmd);
+	
 	/* Basic command sanity. */
 	if (_IOC_TYPE(cmd) != AXDP_IOC_MAGIC || _IOC_NR(cmd) > AXDP_IOC_MAXNR)
 		return -ENOTTY;
@@ -91,13 +112,15 @@ static long axdp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		ret = -ENODEV;
 		goto out;
 	}
-
 	switch (cmd) {
 	case AXDP_IOC_ADD_TX_RULE:
 		ret = axdp_do_add_tx(priv, &req);
 		break;
 	case AXDP_IOC_ADD_RX_RULE:
 		ret = axdp_do_add_rx(priv, &req);
+		break;
+	case AXDP_IOC_ADD_VLAN_RULE:
+		ret = axdp_do_add_vlan(priv, &req);
 		break;
 	case AXDP_IOC_DEL_TX_RULE:
 		del_rule(&priv->tx_xdp_flow_ctx, req.value);

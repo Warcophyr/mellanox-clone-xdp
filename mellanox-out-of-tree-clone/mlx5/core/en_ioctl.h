@@ -27,6 +27,8 @@
 #ifndef AXDP_RX_DROP
 #define AXDP_RX_DROP	0	/* DROP the matching packets (default)        */
 #define AXDP_RX_PASS	1	/* ALLOW: let the matching packets continue   */
+#define AXDP_RX_MOD_HDR 2   /* Modify headers  */
+#define AXDP_RX_MARK	3	/* MARK: set metadata REG_B to @mark (32 bit) */
 #endif
 
 /*
@@ -51,8 +53,19 @@ struct axdp_ioctl_rule {
 	__u16 src_port;
 	__u16 dst_port;
 	__u8  ip_proto;
-	__u8  action;	/* AXDP_RX_DROP (default) / AXDP_RX_PASS */
+	__u8  action;	/* AXDP_RX_DROP (default) / AXDP_RX_PASS / AXDP_RX_MARK */
 	__u8  _pad[2];
+
+	/* ADD_RX_RULE, action AXDP_RX_MARK: 32-bit value written to REG_B. */
+	__u32 mark;
+
+	/*
+	 * ADD_VLAN_RULE: 12-bit C-VLAN id (802.1Q) to push on the matching
+	 * EGRESS packets. @value selects the WQE metadata tag (reg_a) to match,
+	 * exactly like ADD_TX_RULE.
+	 */
+	__u16 vid;
+	__u8  _pad2[2];
 };
 
 #define AXDP_IOC_MAGIC		'X'
@@ -61,8 +74,9 @@ struct axdp_ioctl_rule {
 #define AXDP_IOC_ADD_RX_RULE	_IOWR(AXDP_IOC_MAGIC, 2, struct axdp_ioctl_rule)
 #define AXDP_IOC_DEL_TX_RULE	_IOW(AXDP_IOC_MAGIC,  3, struct axdp_ioctl_rule)
 #define AXDP_IOC_DEL_RX_RULE	_IOW(AXDP_IOC_MAGIC,  4, struct axdp_ioctl_rule)
+#define AXDP_IOC_ADD_VLAN_RULE	_IOWR(AXDP_IOC_MAGIC, 5, struct axdp_ioctl_rule)
 
-#define AXDP_IOC_MAXNR		4
+#define AXDP_IOC_MAXNR		5
 
 #ifdef __KERNEL__
 struct mlx5e_priv;
