@@ -7,8 +7,9 @@
  * It is the streaming counterpart of axdp_add_rule: instead of taking one
  * rule from argv, it consumes a continuous stream of add/del operations that a
  * BPF program (see axdp_ringbuf.bpf.c) pushes into a BPF_MAP_TYPE_RINGBUF. Each
- * record is a struct axdp_rb_event encoding one of four operations:
- *   AXDP_OP_ADD_TX, AXDP_OP_ADD_RX, AXDP_OP_DEL_TX, AXDP_OP_DEL_RX.
+ * record is a struct axdp_rb_event encoding one of five operations:
+ *   AXDP_OP_ADD_TX, AXDP_OP_ADD_RX, AXDP_OP_DEL_TX, AXDP_OP_DEL_RX,
+ *   AXDP_OP_ADD_VLAN.
  *
  * Build:  cc -Wall -O2 -o axdp_rule_daemon axdp_rule_daemon.c -lbpf
  *
@@ -46,22 +47,35 @@ static void on_signal(int sig)
 static unsigned long op_to_ioctl(__u32 op)
 {
 	switch (op) {
-	case AXDP_OP_ADD_TX: return AXDP_IOC_ADD_TX_RULE;
-	case AXDP_OP_ADD_RX: return AXDP_IOC_ADD_RX_RULE;
-	case AXDP_OP_DEL_TX: return AXDP_IOC_DEL_TX_RULE;
-	case AXDP_OP_DEL_RX: return AXDP_IOC_DEL_RX_RULE;
-	default:             return 0;
+	case AXDP_OP_ADD_TX:   return AXDP_IOC_ADD_TX_RULE;
+	case AXDP_OP_ADD_RX:   return AXDP_IOC_ADD_RX_RULE;
+	case AXDP_OP_DEL_TX:   return AXDP_IOC_DEL_TX_RULE;
+	case AXDP_OP_DEL_RX:   return AXDP_IOC_DEL_RX_RULE;
+	case AXDP_OP_ADD_VLAN: return AXDP_IOC_ADD_VLAN_RULE;
+	default:               return 0;
 	}
 }
 
 static const char *op_name(__u32 op)
 {
 	switch (op) {
-	case AXDP_OP_ADD_TX: return "add-tx";
-	case AXDP_OP_ADD_RX: return "add-rx";
-	case AXDP_OP_DEL_TX: return "del-tx";
-	case AXDP_OP_DEL_RX: return "del-rx";
-	default:             return "unknown";
+	case AXDP_OP_ADD_TX:   return "add-tx";
+	case AXDP_OP_ADD_RX:   return "add-rx";
+	case AXDP_OP_DEL_TX:   return "del-tx";
+	case AXDP_OP_DEL_RX:   return "del-rx";
+	case AXDP_OP_ADD_VLAN: return "add-vlan";
+	default:               return "unknown";
+	}
+}
+
+static const char *action_name(__u8 action)
+{
+	switch (action) {
+	case AXDP_RX_DROP:    return "DROP";
+	case AXDP_RX_PASS:    return "PASS";
+	case AXDP_RX_MOD_HDR: return "MOD_HDR";
+	case AXDP_RX_MARK:    return "MARK";
+	default:              return "?";
 	}
 }
 
@@ -88,8 +102,8 @@ static int handle_event(void *ctx, void *data, size_t len)
 
 	/* All operands are already in the byte order the kernel expects (the
 	 * producer is responsible for that), so forward them verbatim. The
-	 * 5-tuple fields only matter for ADD_RX; the kernel ignores them for the
-	 * other ops. */
+	 * 5-tuple/@mark fields only matter for ADD_RX and @vid only for ADD_VLAN;
+	 * the kernel ignores the unused fields for the other ops. */
 	req.value    = ev->value;
 	req.src_ip   = ev->src_ip;
 	req.dst_ip   = ev->dst_ip;
@@ -97,6 +111,8 @@ static int handle_event(void *ctx, void *data, size_t len)
 	req.dst_port = ev->dst_port;
 	req.ip_proto = ev->ip_proto;
 	req.action   = ev->action;
+	req.mark     = ev->mark;
+	req.vid      = ev->vid;
 
 	if (ioctl(dev_fd, cmd, &req) < 0) {
 		fprintf(stderr, "ioctl(%s, value=0x%08x): %s\n",
@@ -105,14 +121,17 @@ static int handle_event(void *ctx, void *data, size_t len)
 	}
 
 	if (ev->op == AXDP_OP_ADD_RX)
-		printf("%s sip=0x%08x dip=0x%08x proto=%u sport=%u dport=%u action=%s value=0x%08x -> rule index %u\n",
+		printf("%s sip=0x%08x dip=0x%08x proto=%u sport=%u dport=%u action=%s mark=0x%08x value=0x%08x -> rule index %u\n",
 		       op_name(ev->op), ev->src_ip, ev->dst_ip, ev->ip_proto,
 		       ntohs(ev->src_port), ntohs(ev->dst_port),
-		       ev->action == AXDP_RX_PASS ? "PASS" : "DROP", ev->value,
+		       action_name(ev->action), ev->mark, ev->value,
 		       req.index);
 	else if (ev->op == AXDP_OP_ADD_TX)
 		printf("%s value=0x%08x -> rule index %u\n",
 		       op_name(ev->op), ev->value, req.index);
+	else if (ev->op == AXDP_OP_ADD_VLAN)
+		printf("%s value=0x%08x vid=%u -> rule index %u\n",
+		       op_name(ev->op), ev->value, ev->vid, req.index);
 	else
 		printf("%s index %u -> removed\n", op_name(ev->op), ev->value);
 

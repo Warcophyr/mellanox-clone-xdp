@@ -126,7 +126,7 @@ static __always_inline __u32 meta_read_ft_metadata(struct xdp_md *ctx)
 	__u8 *data_meta = (void *)(long)ctx->data_meta;
 	void *data      = (void *)(long)ctx->data;
 	if ((void *)data_meta + METADATA_LEN > data) {
-		bpf_printk("flow_Tag fallback\n");
+		bpf_printk("ft_metadata fallback\n");
 		return 0;
 	}
     __u32 *m = (__u32 *)data_meta;

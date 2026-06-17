@@ -17,9 +17,9 @@ struct axdp_flow_ctx {
 	int                         n_rules;
 };
 
-int add_meta_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx);
-int add_meta_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag);
-int add_meta_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
+int add_tx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx);
+int add_tx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag);
+int add_tx_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		       u32 meta_tag, u16 vid);
 
 int add_rx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx);
@@ -28,9 +28,9 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		u8 action, u32 mark);
 
 
-int  add_meta_and_dip_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
+int  add_tx_and_dip_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 			   u32 meta_tag, __be32 dst_ip);
-int add_meta_table_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag);
+int add_tx_table_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag);
 
 void del_table_rule(struct axdp_flow_ctx *ctx);
 void del_rule(struct axdp_flow_ctx *ctx, u32 index);

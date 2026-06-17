@@ -1808,9 +1808,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     ((u32*) mxbuf.xdp.data_meta)[4] = (flow_tag <<8) + (0x0ff & l4_type);
     
     pr_info("axdp: ft_metadata = 0x%x\n",cqe->ft_metadata);
-    //u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
-    //printk(KERN_INFO "hash type: %d\n",htype);
-    //printk(KERN_INFO "hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
+    u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
+    printk(KERN_INFO "hash type: %d\n",htype);
+    printk(KERN_INFO "hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
     
     act = bpf_prog_run_xdp(prog, xdp);
 
@@ -1824,7 +1824,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     printk(KERN_INFO "--> command_axdp=0x%x command_value=0x%x\n", command_axdp, command_value_axdp);
     
     if (command_axdp==1) {//ADD TX rule
-      int ferr =add_meta_rule(priv->mdev, &priv->tx_xdp_flow_ctx,command_value_axdp);
+      int ferr =add_tx_rule(priv->mdev, &priv->tx_xdp_flow_ctx,command_value_axdp);
 			if (ferr)
 				printk(KERN_INFO "add_tx_rule failed: %d\n", ferr);
 			else 

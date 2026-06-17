@@ -315,6 +315,22 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
   int err;
   struct mlx5_cqe64 *cqe = mxbuf->cqe;
   
+  //sal 
+  xdp->data_meta = (char*) xdp->data-20;
+  ((u32*) xdp->data_meta)[0] = cqe->rss_hash_result;
+  //get_cqe_ts
+  ((u32*) xdp->data_meta)[1] = be32_to_cpu(cqe->timestamp_h);
+  ((u32*) xdp->data_meta)[2] = be32_to_cpu(cqe->timestamp_l);
+  ((u32*) xdp->data_meta)[3] = cqe->ft_metadata;
+  u8 l4_type=get_cqe_l4_hdr_type(cqe);
+  u16 flow_tag = get_cqe_flow_tag(cqe);
+  ((u32*) xdp->data_meta)[4] = (flow_tag <<8) + (0x0ff & l4_type);
+    
+  u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
+  printk(KERN_INFO "2 hash type: %d\n",htype);
+  printk(KERN_INFO "2 hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
+  pr_info("2 axdp: ft_metadata = 0x%x\n",cqe->ft_metadata);
+    		
   act = bpf_prog_run_xdp(prog, xdp);
   switch (act) {
   case XDP_PASS:

@@ -34,9 +34,9 @@ static long axdp_do_add_tx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 {
 	int idx, err;
 
-	/* add_meta_rule() installs at ctx->n_rules and bumps the counter. */
+	/* add_tx_rule() installs at ctx->n_rules and bumps the counter. */
 	idx = priv->tx_xdp_flow_ctx.n_rules;
-	err = add_meta_rule(priv->mdev, &priv->tx_xdp_flow_ctx, req->value);
+	err = add_tx_rule(priv->mdev, &priv->tx_xdp_flow_ctx, req->value);
 	if (err)
 		return err;
 
@@ -51,10 +51,10 @@ static long axdp_do_add_vlan(struct mlx5e_priv *priv, struct axdp_ioctl_rule *re
 	/*
 	 * VLAN-push rules live on the same EGRESS meta table as ADD_TX_RULE:
 	 * @value is the WQE metadata tag (reg_a) to match, @vid the C-VLAN id
-	 * to push. add_meta_vlan_rule() installs at n_rules and bumps it.
+	 * to push. add_tx_vlan_rule() installs at n_rules and bumps it.
 	 */
 	idx = priv->tx_xdp_flow_ctx.n_rules;
-	err = add_meta_vlan_rule(priv->mdev, &priv->tx_xdp_flow_ctx,
+	err = add_tx_vlan_rule(priv->mdev, &priv->tx_xdp_flow_ctx,
 				 req->value, req->vid);
 	if (err)
 		return err;

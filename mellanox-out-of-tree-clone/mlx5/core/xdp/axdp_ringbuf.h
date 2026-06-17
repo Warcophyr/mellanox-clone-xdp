@@ -22,6 +22,8 @@
 #ifndef AXDP_RX_DROP
 #define AXDP_RX_DROP	0	/* DROP the matching packets (default)        */
 #define AXDP_RX_PASS	1	/* ALLOW: let the matching packets continue   */
+#define AXDP_RX_MOD_HDR 2	/* Modify headers                             */
+#define AXDP_RX_MARK	3	/* MARK: set metadata REG_B to @mark (32 bit) */
 #endif
 
 /* Operation encoded in each ring-buffer record. */
@@ -30,6 +32,7 @@ enum axdp_op {
 	AXDP_OP_ADD_RX = 2,	/* IPv4 5-tuple in @src_ip..@ip_proto (or legacy @value) */
 	AXDP_OP_DEL_TX = 3,	/* @value = TX rule index to remove                 */
 	AXDP_OP_DEL_RX = 4,	/* @value = RX rule index to remove                 */
+	AXDP_OP_ADD_VLAN = 5,	/* @value = WQE metadata tag (reg_a); push @vid     */
 };
 
 /*
@@ -43,6 +46,10 @@ enum axdp_op {
  *     @src_port, @dst_port, @ip_proto (all network byte order; 0 = wildcard).
  *     A producer that fills only @value and leaves the 5-tuple zeroed keeps the
  *     old behaviour (@value taken as the dst IPv4 to DROP).
+ *   - For AXDP_OP_ADD_RX with @action == AXDP_RX_MARK, @mark is the 32-bit value
+ *     written to REG_B.
+ *   - For AXDP_OP_ADD_VLAN, @value selects the WQE metadata tag (reg_a) to match
+ *     (like ADD_TX) and @vid is the 12-bit C-VLAN id (0-4095) to push.
  */
 struct axdp_rb_event {
 	__u32 op;	/* enum axdp_op */
@@ -54,8 +61,12 @@ struct axdp_rb_event {
 	__u16 src_port;
 	__u16 dst_port;
 	__u8  ip_proto;
-	__u8  action;	/* AXDP_RX_DROP (default) / AXDP_RX_PASS */
+	__u8  action;	/* AXDP_RX_DROP (default) / AXDP_RX_PASS / AXDP_RX_MARK */
 	__u8  _pad[2];
+
+	__u32 mark;	/* ADD_RX, action AXDP_RX_MARK: 32-bit REG_B value */
+	__u16 vid;	/* ADD_VLAN: 12-bit C-VLAN id to push              */
+	__u8  _pad2[2];
 };
 
 #endif /* __AXDP_RINGBUF_H__ */

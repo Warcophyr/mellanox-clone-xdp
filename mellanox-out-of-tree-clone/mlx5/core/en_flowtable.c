@@ -18,6 +18,8 @@
 #include <linux/mlx5/driver.h>
 #include <linux/mlx5/fs.h>
 #include <linux/mlx5/device.h>
+#include <linux/mlx5/eswitch.h>	/* mlx5_eswitch_mode(), MLX5_ESWITCH_OFFLOADS */
+#include <linux/mlx5/vport.h>	/* MLX5_VPORT_UPLINK */
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/if_ether.h>
@@ -29,7 +31,7 @@
 #include "en/rx_res.h"	/* mlx5e_rx_res_get_tirn_direct() */
 #include "lib/mlx5.h"	/* mlx5_uplink_netdev_get() */
 
-int add_meta_and_dip_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
+int add_tx_and_dip_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 			  u32 meta_tag, __be32 dst_ip)
 {
 	struct mlx5_flow_table_attr ft_attr = {};
@@ -136,7 +138,7 @@ out_ft:
 	return err;
 }
 
-int add_meta_table_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag)
+int add_tx_table_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag)
 {
 	struct mlx5_flow_table_attr ft_attr = {};
 	struct mlx5_flow_act flow_act = {};
@@ -223,19 +225,35 @@ out_ft:
 	return err;
 }
 
-int add_meta_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
+int add_tx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
 {
 	struct mlx5_flow_table_attr ft_attr = {};
+	bool switchdev;
 	int err = 0;
 
 	/*
-	 * EGRESS = pipeline TX della NIC. reg_a contiene il metadata
-	 * caricato dalla WQE (mlx5_wqe_eth_seg.metadata), quindi e' qui
-	 * che ha senso matcharlo per A-XDP.
+	 * In switchdev (eswitch OFFLOADS) mode the uplink egress steering lives
+	 * in the FDB, not in the NIC TX EGRESS namespace. The FDB also supports
+	 * the native VLAN_PUSH steering action, so add_tx_vlan_rule() can push
+	 * a tag directly instead of faking it with a PACKET_REFORMAT/INSERT_HDR.
+	 * In legacy mode we keep matching reg_a (the WQE metadata) on the NIC TX
+	 * EGRESS namespace as before.
 	 */
-	ctx->ns = mlx5_get_flow_namespace(mdev, MLX5_FLOW_NAMESPACE_EGRESS);
+	switchdev = mlx5_eswitch_mode(mdev) == MLX5_ESWITCH_OFFLOADS;
+
+	/*
+	 * Use FDB_BYPASS, not the FDB root: the root's prio-0 major slot holds a
+	 * sub-namespace (not tables), so a table created there is not in the
+	 * traversed chain. FDB_BYPASS is the highest-priority FDB path, evaluated
+	 * before the TC/slow-path forwarding the eswitch installs -- our rules
+	 * must sit there to actually catch traffic.
+	 */
+	ctx->ns = mlx5_get_flow_namespace(mdev,
+					  switchdev ? MLX5_FLOW_NAMESPACE_FDB_BYPASS
+						    : MLX5_FLOW_NAMESPACE_EGRESS);
 	if (!ctx->ns) {
-		pr_err("axdp: namespace EGRESS non disponibile\n");
+		pr_err("axdp: namespace %s non disponibile\n",
+		       switchdev ? "FDB_BYPASS" : "EGRESS");
 		return -ENODEV;
 	}
 
@@ -253,10 +271,12 @@ int add_meta_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
 	ft_attr.autogroup.max_num_groups = 8;
 	/*
 	 * reformat_en: required so FTEs in this table may carry a
-	 * PACKET_REFORMAT action (used by add_meta_vlan_rule() to INSERT_HDR a
-	 * VLAN tag). Without it the firmware rejects the reformat action.
+	 * PACKET_REFORMAT action (used by add_tx_vlan_rule() to INSERT_HDR a
+	 * VLAN tag) on the legacy EGRESS path. In switchdev mode we use the
+	 * native VLAN_PUSH action instead, so the flag is not needed.
 	 */
-	ft_attr.flags = MLX5_FLOW_TABLE_TUNNEL_EN_REFORMAT;
+	if (!switchdev)
+		ft_attr.flags = MLX5_FLOW_TABLE_TUNNEL_EN_REFORMAT;
 
 	ctx->ft = mlx5_create_auto_grouped_flow_table(ctx->ns, &ft_attr);
 	if (IS_ERR(ctx->ft)) {
@@ -269,11 +289,23 @@ int add_meta_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
 	return 0;
 }
 
-int add_meta_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag) {
+int add_tx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 meta_tag) {
 	struct mlx5_flow_act flow_act = {};
 	struct mlx5_flow_spec *spec = NULL;
 	void *misc2_c, *misc2_v;
+	bool switchdev;
 	int err = 0;
+
+	/*
+	 * add_tx_table() built ctx->ft in the FDB when the eswitch is in
+	 * OFFLOADS (switchdev) mode, or in the NIC TX EGRESS namespace otherwise.
+	 * The rule below just installs into that table, so it follows whichever
+	 * domain was chosen. NB: metadata_reg_a is a NIC-TX-domain register; in
+	 * the FDB the WQE metadata is only matchable if it has been copied into a
+	 * reg_c (reg_c_0/1 are reserved for vport metadata in switchdev).
+	 */
+	switchdev = mlx5_eswitch_mode(mdev) == MLX5_ESWITCH_OFFLOADS;
+
 	spec = kvzalloc(sizeof(*spec), GFP_KERNEL);
 	if (!spec) {
 		err = -ENOMEM;
@@ -298,18 +330,22 @@ int add_meta_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx, u32 met
 
 	/* ---- azione: DROP ---- */
 	flow_act.action = MLX5_FLOW_CONTEXT_ACTION_DROP;
-	
+
+	/* del_rule()/del_table_rule() need mdev for dealloc paths. */
+	ctx->mdev = mdev;
+
 	ctx->rules[ctx->n_rules] = mlx5_add_flow_rules(ctx->ft, spec, &flow_act, NULL, 0);
 	if (IS_ERR(ctx->rules[ctx->n_rules])) {
 		err = PTR_ERR(ctx->rules[ctx->n_rules]);
-		pr_err("axdp: add_flow_rules err=%d\n", err);
+		pr_err("axdp: add_flow_rules (%s) err=%d\n",
+		       switchdev ? "fdb" : "egress", err);
 		ctx->rules[ctx->n_rules] = NULL;
 		goto out_spec;
 	}
 	ctx->n_rules++;
 
-	pr_info("axdp: regola EGRESS installata: reg_a=0x%x -> DROP\n",
-		meta_tag);
+	pr_info("axdp: !! regola %s installata: reg_a=0x%x -> DROP\n",
+		switchdev ? "FDB" : "EGRESS", meta_tag);
 
 	kvfree(spec);
 	return 0;
@@ -323,7 +359,89 @@ out_ft:
 }
 
 
-int add_meta_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
+/*
+ * Switchdev (eswitch OFFLOADS) variant: the FDB supports the native VLAN_PUSH
+ * steering action, so we push the C-VLAN tag directly and forward the packet
+ * out the uplink vport (the wire). This mirrors the eswitch TC vlan-push path
+ * (eswitch_offloads.c) and avoids the PACKET_REFORMAT/INSERT_HDR workaround the
+ * NIC TX EGRESS namespace needs.
+ */
+static int add_tx_vlan_rule_switchdev(struct mlx5_core_dev *mdev,
+					struct axdp_flow_ctx *ctx,
+					u32 meta_tag, u16 vid)
+{
+	struct mlx5_flow_destination dest = {};
+	struct mlx5_flow_act flow_act = {};
+	struct mlx5_flow_spec *spec = NULL;
+	void *misc2_c, *misc2_v;
+	int err = 0;
+
+	/* Device must support pushing a single VLAN tag in the FDB. */
+	if (!MLX5_CAP_ESW_FLOWTABLE_FDB(mdev, push_vlan)) {
+		pr_err("axdp: FDB VLAN_PUSH unsupported\n");
+		return -EOPNOTSUPP;
+	}
+
+	spec = kvzalloc(sizeof(*spec), GFP_KERNEL);
+	if (!spec)
+		return -ENOMEM;
+
+	/* match sui 32 bit di metadata_reg_a (il tag caricato dalla WQE). */
+	spec->match_criteria_enable = MLX5_MATCH_MISC_PARAMETERS_2;
+
+	misc2_c = MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
+			       misc_parameters_2);
+	misc2_v = MLX5_ADDR_OF(fte_match_param, spec->match_value,
+			       misc_parameters_2);
+	MLX5_SET(fte_match_set_misc2, misc2_c, metadata_reg_a, 0xffffffff);
+	MLX5_SET(fte_match_set_misc2, misc2_v, metadata_reg_a, meta_tag);
+
+	/*
+	 * An FDB rule is programmed on both the RX (from-wire) and TX (to-wire)
+	 * steering pipes. VLAN_PUSH on the RX pipe is unsupported on this HW
+	 * (that is why the eswitch routes such rules through a termination
+	 * table), so DR rejects the rule with -EINVAL. Our packets are host
+	 * egress, i.e. they originate from the local vport -- mark the flow
+	 * source accordingly so DR skips the RX pipe and only programs TX, where
+	 * VLAN_PUSH is valid. See dr_rule_skip() / dr_rule_create_rule_fdb().
+	 */
+	spec->flow_context.flow_source = MLX5_FLOW_CONTEXT_FLOW_SOURCE_LOCAL_VPORT;
+
+	/*
+	 * Azione: VLAN_PUSH (insert del tag) + FWD_DEST verso l'uplink vport,
+	 * cosi' il pacchetto esce sul filo con il tag 802.1Q. VLAN_PUSH non e'
+	 * un verdetto terminante, quindi va accoppiato a una destinazione.
+	 */
+	flow_act.action = MLX5_FLOW_CONTEXT_ACTION_VLAN_PUSH |
+			  MLX5_FLOW_CONTEXT_ACTION_FWD_DEST;
+	flow_act.vlan[0].ethtype = ETH_P_8021Q;
+	flow_act.vlan[0].vid     = vid & VLAN_VID_MASK;
+	flow_act.vlan[0].prio    = 0;
+
+	dest.type      = MLX5_FLOW_DESTINATION_TYPE_VPORT;
+	dest.vport.num = MLX5_VPORT_UPLINK;
+
+	ctx->mdev = mdev;
+
+	ctx->rules[ctx->n_rules] = mlx5_add_flow_rules(ctx->ft, spec, &flow_act,
+						       &dest, 1);
+	if (IS_ERR(ctx->rules[ctx->n_rules])) {
+		err = PTR_ERR(ctx->rules[ctx->n_rules]);
+		pr_err("axdp: add_flow_rules (fdb vlan push) err=%d\n", err);
+		ctx->rules[ctx->n_rules] = NULL;
+		goto out_spec;
+	}
+	ctx->n_rules++;
+
+	pr_info("axdp: regola FDB installata: reg_a=0x%x -> VLAN_PUSH vid=%u -> UPLINK\n",
+		meta_tag, vid);
+
+out_spec:
+	kvfree(spec);
+	return err;
+}
+
+int add_tx_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		       u32 meta_tag, u16 vid)
 {
 	/*
@@ -345,6 +463,14 @@ int add_meta_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 	void *misc2_c, *misc2_v;
 	int err = 0;
 
+	/*
+	 * In switchdev mode add_tx_table() built the table in the FDB, where
+	 * the native VLAN_PUSH action is available -- use it instead of the
+	 * EGRESS reformat workaround below.
+	 */
+	if (mlx5_eswitch_mode(mdev) == MLX5_ESWITCH_OFFLOADS)
+		return add_tx_vlan_rule_switchdev(mdev, ctx, meta_tag, vid);
+
 	/* Device must support inserting a VLAN-sized header at the MAC offset. */
 	if (!MLX5_CAP_FLOWTABLE_NIC_TX(mdev, reformat_insert) ||
 	    MLX5_CAP_GEN_2(mdev, max_reformat_insert_size) < sizeof(vlan_hdr) ||
@@ -359,7 +485,7 @@ int add_meta_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		return -ENOMEM;
 
 	/*
-	 * Stessa logica di add_meta_rule(): match sui 32 bit di metadata_reg_a
+	 * Stessa logica di add_tx_rule(): match sui 32 bit di metadata_reg_a
 	 * (il tag caricato dalla WQE) sulla tabella EGRESS gia' creata.
 	 */
 	spec->match_criteria_enable = MLX5_MATCH_MISC_PARAMETERS_2;
@@ -428,14 +554,31 @@ out_spec:
 int add_rx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
 {
 	struct mlx5_flow_table_attr ft_attr = {};
+	bool switchdev;
 	int err = 0;
 
 	/*
-	 * INGRESS = pipeline RX della NIC. 
+	 * In switchdev (eswitch OFFLOADS) mode RX traffic from the wire is
+	 * steered by the FDB (it enters at the uplink vport), so the RX rules
+	 * must live there too -- add_rx_rule() then delivers matched packets to
+	 * the host PF vport instead of to a NIC-RX TIR. In legacy mode we keep
+	 * the NIC RX BYPASS namespace and forward to a TIR as before.
 	 */
-	ctx->ns = mlx5_get_flow_namespace(mdev, MLX5_FLOW_NAMESPACE_BYPASS);
+	switchdev = mlx5_eswitch_mode(mdev) == MLX5_ESWITCH_OFFLOADS;
+
+	/*
+	 * Use FDB_BYPASS, not the FDB root: the root's prio-0 major slot holds a
+	 * sub-namespace (not tables), so a table created there is not in the
+	 * traversed chain. FDB_BYPASS is the highest-priority FDB path, evaluated
+	 * before the TC/slow-path forwarding the eswitch installs -- our rules
+	 * must sit there to actually catch traffic.
+	 */
+	ctx->ns = mlx5_get_flow_namespace(mdev,
+					  switchdev ? MLX5_FLOW_NAMESPACE_FDB_BYPASS
+						    : MLX5_FLOW_NAMESPACE_BYPASS);
 	if (!ctx->ns) {
-		pr_err("axdp: namespace BYPASS non disponibile\n");
+		pr_err("axdp: namespace %s non disponibile\n",
+		       switchdev ? "FDB_BYPASS" : "BYPASS");
 		return -ENODEV;
 	}
 
@@ -449,7 +592,14 @@ int add_rx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx)
 	 */
 	ft_attr.max_fte = 1024;
 	ft_attr.level   = 0;
-	ft_attr.prio    = 0;
+	/*
+	 * In switchdev both the RX and TX tables share the FDB_BYPASS namespace,
+	 * whose prios hold a single level each. The TX table (add_tx_table)
+	 * uses prio 0, so the RX table must use a different prio or its creation
+	 * collides with the TX table. In legacy mode the two live in separate
+	 * namespaces, so prio 0 is fine.
+	 */
+	ft_attr.prio    = switchdev ? 1 : 0;
 	ft_attr.autogroup.max_num_groups = 8;
 
 	ctx->ft = mlx5_create_auto_grouped_flow_table(ctx->ns, &ft_attr);
@@ -471,29 +621,22 @@ enum arfs_type {
 	ARFS_NUM_TYPES,
 };
 
-static enum mlx5_traffic_types arfs_get_tt(enum arfs_type type)
-{
-	switch (type) {
-	case ARFS_IPV4_TCP:
-		return MLX5_TT_IPV4_TCP;
-	case ARFS_IPV4_UDP:
-		return MLX5_TT_IPV4_UDP;
-	case ARFS_IPV6_TCP:
-		return MLX5_TT_IPV6_TCP;
-	case ARFS_IPV6_UDP:
-		return MLX5_TT_IPV6_UDP;
-	default:
-		return -EINVAL;
-	}
-}
-
 int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		__be32 sip, __be32 dip, u8 ip_proto, __be16 sport, __be16 dport,
 		u8 action, u32 mark) {
 	struct mlx5_flow_act flow_act = {};
 	struct mlx5_flow_spec *spec = NULL;
 	void *outer_c, *outer_v;
+	bool switchdev;
 	int err = 0;
+
+	/*
+	 * add_rx_table() put ctx->ft in the FDB when the eswitch is in OFFLOADS
+	 * (switchdev) mode, or in the NIC RX BYPASS namespace otherwise. The
+	 * destination and modify-header domain differ between the two, so branch
+	 * on the mode below.
+	 */
+	switchdev = mlx5_eswitch_mode(mdev) == MLX5_ESWITCH_OFFLOADS;
 
 	spec = kvzalloc(sizeof(*spec), GFP_KERNEL);
 	if (!spec) {
@@ -591,42 +734,78 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 	//sal
 	struct mlx5_flow_destination *dst = NULL;
 
+	/*
+	 * An FDB table programs a rule on both the RX (from-wire, source ==
+	 * uplink) and TX (to-wire, source == local vport) steering pipes.
+	 *
+	 * Forwarding to the PF vport (PASS/MARK below) only makes sense for
+	 * wire->host traffic, so for those actions we flag the flow source as
+	 * UPLINK and DR programs the RX pipe only (see dr_rule_skip()). A DROP
+	 * has no such constraint: leave the flow source unset so it lands on
+	 * both pipes and drops the matched 5-tuple regardless of direction.
+	 */
+	if (switchdev && action != AXDP_RX_DROP)
+		spec->flow_context.flow_source =
+			MLX5_FLOW_CONTEXT_FLOW_SOURCE_UPLINK;
+
 	if (action == AXDP_RX_PASS || action == AXDP_RX_MARK ||
 	    action == AXDP_RX_MOD_HDR) {
-		struct net_device *netdev = mlx5_uplink_netdev_get(mdev);
-		struct mlx5e_priv *priv;
-
-		if (!netdev) {
-			err = -ENODEV;
-			goto out_spec;
-		}
-		priv = netdev_priv(netdev);
-
 		dst = kzalloc(sizeof(*dst), GFP_KERNEL);
 		if (!dst) {
 			err = -ENOMEM;
 			goto out_spec;
 		}
-		dst->tir_num = mlx5e_rx_res_get_tirn_direct(priv->rx_res, 0);
-		//enum mlx5_traffic_types tt;
-		//tt = arfs_get_tt(ARFS_IPV4_TCP);
-	    //dst->tir_num = mlx5e_rx_res_get_tirn_rss(rx_res, tt);
-		dst->type = MLX5_FLOW_DESTINATION_TYPE_TIR; //MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE
+
+		if (switchdev) {
+			/*
+			 * FDB has no TIR destinations; deliver matched packets to
+			 * the host by forwarding to the PF vport, which then runs
+			 * the PF's own NIC RX steering (RSS/TIR).
+			 */
+			dst->type      = MLX5_FLOW_DESTINATION_TYPE_VPORT;
+			dst->vport.num = MLX5_VPORT_PF;
+		} else {
+			struct net_device *netdev = mlx5_uplink_netdev_get(mdev);
+			struct mlx5e_priv *priv;
+
+			if (!netdev) {
+				err = -ENODEV;
+				goto out_spec;
+			}
+			priv = netdev_priv(netdev);
+
+			dst->tir_num = mlx5e_rx_res_get_tirn_direct(priv->rx_res, 0);
+			//enum mlx5_traffic_types tt;
+			//tt = arfs_get_tt(ARFS_IPV4_TCP);
+		    //dst->tir_num = mlx5e_rx_res_get_tirn_rss(rx_res, tt);
+			dst->type = MLX5_FLOW_DESTINATION_TYPE_TIR; //MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE
+		}
 	}
-		
+
 	if (action == AXDP_RX_MOD_HDR || action == AXDP_RX_MARK) {
 		u8 flow_action[MLX5_UN_SZ_BYTES(set_add_copy_action_in_auto)] = {};
 		/* MARK carries a user-supplied value; MOD_HDR keeps the legacy tag. */
-		u32 reg_b = (action == AXDP_RX_MARK) ? mark : 0xbebabeba;
-		/* Build one SET instruction: reg_B = mark (32 bits) */
+		u32 mark_val = (action == AXDP_RX_MARK) ? mark : 0xbebabeba;
+		/*
+		 * Legacy NIC RX writes reg_B (surfaces in the CQE flow_table
+		 * metadata the driver reads). The FDB has no reg_B; reg_C_0/1 are
+		 * reserved for vport/source-port metadata in switchdev, so use
+		 * reg_C_2 there and alloc the context in the FDB namespace.
+		 */
+		u8 field = switchdev ? MLX5_ACTION_IN_FIELD_METADATA_REG_C_2
+				     : MLX5_ACTION_IN_FIELD_METADATA_REG_B;
+		enum mlx5_flow_namespace_type mh_ns =
+			switchdev ? MLX5_FLOW_NAMESPACE_FDB
+				  : MLX5_FLOW_NAMESPACE_KERNEL;
+		/* Build one SET instruction: reg = mark (32 bits) */
 		MLX5_SET(set_action_in, flow_action, action_type, MLX5_ACTION_TYPE_SET);
-		MLX5_SET(set_action_in, flow_action, field,       MLX5_ACTION_IN_FIELD_METADATA_REG_B);
+		MLX5_SET(set_action_in, flow_action, field,       field);
 		MLX5_SET(set_action_in, flow_action, offset,      0);
 		MLX5_SET(set_action_in, flow_action, length,      32);   /* 0 also means full field */
-		MLX5_SET(set_action_in, flow_action, data,        reg_b);
+		MLX5_SET(set_action_in, flow_action, data,        mark_val);
 		/* Allocate the modify-header context (a firmware command). */
 		struct mlx5_modify_hdr *mh = mlx5_modify_header_alloc(mdev,
-					MLX5_FLOW_NAMESPACE_KERNEL,  /* RX namespace */
+					mh_ns,
 					1,                            /* num_actions  */
 					flow_action);
 		if (IS_ERR(mh)) {

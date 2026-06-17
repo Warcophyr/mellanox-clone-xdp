@@ -4866,18 +4866,18 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 
 	/* install the steering rule after the XDP program is active */
 	if (prog) {
-		int ferr = add_meta_table(priv->mdev, &priv->tx_xdp_flow_ctx);
+		int ferr = add_tx_table(priv->mdev, &priv->tx_xdp_flow_ctx);
 		if (ferr)
 			netdev_warn(netdev,
-				    "add_meta_table failed: %d\n", ferr);
+				    "add_tx_table failed: %d\n", ferr);
 		else 
-			printk(KERN_INFO "add_meta_table done");
+			printk(KERN_INFO "add_tx_table done");
 		ferr = add_rx_table(priv->mdev, &priv->rx_xdp_flow_ctx);
 		if (ferr)
 			netdev_warn(netdev,
 				    "add_rx_table failed: %d\n", ferr);
 		else 
-			printk(KERN_INFO "add_meta_table done");
+			printk(KERN_INFO "add_tx_table done");
 		
 		/* expose the ioctl device so userspace can add/remove rules */
 		ferr = mlx5e_axdp_ioctl_register(priv);

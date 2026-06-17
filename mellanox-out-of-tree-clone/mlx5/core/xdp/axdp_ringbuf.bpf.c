@@ -52,14 +52,15 @@ static __always_inline int axdp_emit(__u32 op, __u32 value)
 
 /*
  * Enqueue an ADD_RX rule matching the IPv4 5-tuple, with @action telling the
- * NIC what to do (AXDP_RX_DROP / AXDP_RX_PASS) and @value carrying an
- * action-specific operand (e.g. a redirect queue id; 0 if unused). All operands
- * are in network byte order; any 5-tuple field left 0 is a wildcard on the
- * kernel side.
+ * NIC what to do (AXDP_RX_DROP / AXDP_RX_PASS / AXDP_RX_MARK) and @value carrying
+ * an action-specific operand (e.g. a redirect queue id; 0 if unused). When
+ * @action is AXDP_RX_MARK, @mark is the 32-bit value written to REG_B. All
+ * operands are in network byte order; any 5-tuple field left 0 is a wildcard on
+ * the kernel side.
  */
 static __always_inline int axdp_emit_rx5(__u32 sip, __u32 dip, __u8 proto,
 					 __u16 sport, __u16 dport, __u8 action,
-					 __u32 value)
+					 __u32 mark, __u32 value)
 {
 	struct axdp_rb_event *ev;
 
@@ -74,7 +75,28 @@ static __always_inline int axdp_emit_rx5(__u32 sip, __u32 dip, __u8 proto,
 	ev->dst_port = dport;
 	ev->ip_proto = proto;
 	ev->action = action;
+	ev->mark = mark;
 	ev->value = value;
+	bpf_ringbuf_submit(ev, 0);
+	return 0;
+}
+
+/*
+ * Enqueue an ADD_VLAN rule: push the 12-bit C-VLAN id @vid (0-4095) on EGRESS
+ * packets whose WQE metadata tag (reg_a) equals @value. @value is in the same
+ * network byte order as an ADD_TX tag.
+ */
+static __always_inline int axdp_emit_vlan(__u32 value, __u16 vid)
+{
+	struct axdp_rb_event *ev;
+
+	ev = bpf_ringbuf_reserve(&axdp_rb, sizeof(*ev), 0);
+	if (!ev)
+		return -1;
+	__builtin_memset(ev, 0, sizeof(*ev));
+	ev->op = AXDP_OP_ADD_VLAN;
+	ev->value = value;
+	ev->vid = vid;
 	bpf_ringbuf_submit(ev, 0);
 	return 0;
 }
@@ -93,7 +115,7 @@ int axdp_rb_producer(struct xdp_md *ctx)
 		 * (network order 0x5000). src IP / src port left 0 = wildcard. */
 		axdp_emit_rx5(0 /* sip */, 0x647010AC /* dip */, IPPROTO_TCP,
 			      0 /* sport */, bpf_htons(80) /* dport */,
-			      AXDP_RX_DROP, 0 /* value */);
+			      AXDP_RX_DROP, 0 /* mark */, 0 /* value */);
 		emitted = 1;
 	}
 	return XDP_TX;
