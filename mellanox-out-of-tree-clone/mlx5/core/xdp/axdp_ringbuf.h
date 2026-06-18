@@ -33,6 +33,7 @@ enum axdp_op {
 	AXDP_OP_DEL_TX = 3,	/* @value = TX rule index to remove                 */
 	AXDP_OP_DEL_RX = 4,	/* @value = RX rule index to remove                 */
 	AXDP_OP_ADD_VLAN = 5,	/* @value = WQE metadata tag (reg_a); push @vid     */
+	AXDP_OP_SET_PRIO_RATE = 6, /* @value = sq_prio rate in kbps (host order; 0=off) */
 };
 
 /*

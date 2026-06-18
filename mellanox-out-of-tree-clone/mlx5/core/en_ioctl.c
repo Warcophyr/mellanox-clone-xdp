@@ -104,6 +104,21 @@ static long axdp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return -EFAULT;
 	req.index = 0;
 
+	/*
+	 * SET_PRIO_RATE touches the channels' SQs and so takes priv->state_lock
+	 * inside mlx5e_axdp_set_prio_rate(). The ioctl device is registered while
+	 * holding state_lock (state_lock -> axdp_lock), so we must NOT hold
+	 * axdp_lock across that call. Grab priv briefly, drop the lock, then act.
+	 */
+	if (cmd == AXDP_IOC_SET_PRIO_RATE) {
+		mutex_lock(&axdp_lock);
+		priv = axdp_priv;
+		mutex_unlock(&axdp_lock);
+		if (!priv)
+			return -ENODEV;
+		return mlx5e_axdp_set_prio_rate(priv, req.value);
+	}
+
 	mutex_lock(&axdp_lock);
 
 	priv = axdp_priv;

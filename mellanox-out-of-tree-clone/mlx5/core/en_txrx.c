@@ -166,6 +166,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 		goto out;
 
 	busy |= mlx5e_poll_xdpsq_cq(&c->xdpsq.cq);
+	busy |= mlx5e_poll_xdpsq_cq(&c->sq_prio.cq);
 
 	if (c->xdp)
 		busy |= mlx5e_poll_xdpsq_cq(&c->rq_xdpsq.cq);
@@ -237,6 +238,7 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	mlx5e_cq_arm(&c->icosq.cq);
 	mlx5e_cq_arm(&c->async_icosq.cq);
 	mlx5e_cq_arm(&c->xdpsq.cq);
+	mlx5e_cq_arm(&c->sq_prio.cq);
 
 	if (xsk_open) {
 		mlx5e_handle_rx_dim(xskrq);

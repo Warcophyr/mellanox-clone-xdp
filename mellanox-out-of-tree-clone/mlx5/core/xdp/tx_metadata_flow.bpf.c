@@ -57,7 +57,8 @@ int xdptx_metadata_flow(struct xdp_md *ctx)
         if (stamp_metadata(ctx,0x0a0a0a0a))
             return XDP_DROP;
         
-        return XDP_TX;
+        //return XDP_TX;
+        return 5;
 }
 
 char _license[] SEC("license") = "GPL";

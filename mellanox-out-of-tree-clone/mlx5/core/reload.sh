@@ -1,6 +1,7 @@
 #!/bin/bash
 make detach
 sudo rmmod mlx5_core
+#sudo insmod mlx5_core.ko debug=1
 sudo insmod ./mlx5_core.ko
 sudo ip link set ${ETH} up
 sudo ethtool --set-priv-flags ${ETH} skb_tx_mpwqe off

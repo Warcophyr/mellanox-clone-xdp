@@ -545,11 +545,11 @@ mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv)
 	ptp_sq = !!(priv->channels.ptp &&
 		    MLX5E_GET_PFLAG(&priv->channels.params, MLX5E_PFLAG_TX_PORT_TS));
 	nch = priv->channels.num + ptp_sq;
-	/* +2 for xdpsqs, they don't exist on the ptp channel but will not be
-	 * counted for by num_sqs.
+	/* +3 for xdpsqs (rq_xdpsq, xdpsq, sq_prio), they don't exist on the ptp
+	 * channel but will not be counted for by num_sqs.
 	 */
 	if (is_uplink_rep)
-		sqs_per_channel += 2;
+		sqs_per_channel += 3;
 
 	sqs = kvcalloc(nch * sqs_per_channel, sizeof(*sqs), GFP_KERNEL);
 	if (!sqs)
@@ -565,6 +565,7 @@ mlx5e_add_sqs_fwd_rules(struct mlx5e_priv *priv)
 				sqs[num_sqs++] = c->rq_xdpsq.sqn;
 
 			sqs[num_sqs++] = c->xdpsq.sqn;
+			sqs[num_sqs++] = c->sq_prio.sqn;
 		}
 	}
 	if (ptp_sq) {

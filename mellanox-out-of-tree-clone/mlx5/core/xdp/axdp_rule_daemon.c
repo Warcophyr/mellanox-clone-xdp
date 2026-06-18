@@ -7,9 +7,9 @@
  * It is the streaming counterpart of axdp_add_rule: instead of taking one
  * rule from argv, it consumes a continuous stream of add/del operations that a
  * BPF program (see axdp_ringbuf.bpf.c) pushes into a BPF_MAP_TYPE_RINGBUF. Each
- * record is a struct axdp_rb_event encoding one of five operations:
+ * record is a struct axdp_rb_event encoding one of six operations:
  *   AXDP_OP_ADD_TX, AXDP_OP_ADD_RX, AXDP_OP_DEL_TX, AXDP_OP_DEL_RX,
- *   AXDP_OP_ADD_VLAN.
+ *   AXDP_OP_ADD_VLAN, AXDP_OP_SET_PRIO_RATE.
  *
  * Build:  cc -Wall -O2 -o axdp_rule_daemon axdp_rule_daemon.c -lbpf
  *
@@ -52,6 +52,7 @@ static unsigned long op_to_ioctl(__u32 op)
 	case AXDP_OP_DEL_TX:   return AXDP_IOC_DEL_TX_RULE;
 	case AXDP_OP_DEL_RX:   return AXDP_IOC_DEL_RX_RULE;
 	case AXDP_OP_ADD_VLAN: return AXDP_IOC_ADD_VLAN_RULE;
+	case AXDP_OP_SET_PRIO_RATE: return AXDP_IOC_SET_PRIO_RATE;
 	default:               return 0;
 	}
 }
@@ -64,6 +65,7 @@ static const char *op_name(__u32 op)
 	case AXDP_OP_DEL_TX:   return "del-tx";
 	case AXDP_OP_DEL_RX:   return "del-rx";
 	case AXDP_OP_ADD_VLAN: return "add-vlan";
+	case AXDP_OP_SET_PRIO_RATE: return "prio-rate";
 	default:               return "unknown";
 	}
 }
@@ -132,6 +134,9 @@ static int handle_event(void *ctx, void *data, size_t len)
 	else if (ev->op == AXDP_OP_ADD_VLAN)
 		printf("%s value=0x%08x vid=%u -> rule index %u\n",
 		       op_name(ev->op), ev->value, ev->vid, req.index);
+	else if (ev->op == AXDP_OP_SET_PRIO_RATE)
+		printf("%s -> sq_prio rate %u kbps%s\n", op_name(ev->op),
+		       ev->value, ev->value ? "" : " (disabled)");
 	else
 		printf("%s index %u -> removed\n", op_name(ev->op), ev->value);
 

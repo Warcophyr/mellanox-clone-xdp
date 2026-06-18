@@ -833,8 +833,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 			mxbuf.ring = ring;
 			mxbuf.dev = dev;
 
-			pr_info("1 axdp: ft_metadata = \n");
-    		act = bpf_prog_run_xdp(xdp_prog, &mxbuf.xdp);
+			act = bpf_prog_run_xdp(xdp_prog, &mxbuf.xdp);
 
 			length = mxbuf.xdp.data_end - mxbuf.xdp.data;
 			if (mxbuf.xdp.data != orig_data) {

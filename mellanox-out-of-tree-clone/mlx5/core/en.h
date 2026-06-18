@@ -520,6 +520,7 @@ struct mlx5e_xdpsq {
 
   /* control path */
   struct mlx5_wq_ctrl wq_ctrl;
+  u32 rate_limit;
   struct mlx5e_channel *channel;
 } ____cacheline_aligned_in_smp;
 

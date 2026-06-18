@@ -12,6 +12,7 @@
  *   ./axdp_add_rule rx [5-tuple flags]   # DROP ingress packets matching the tuple
  *   ./axdp_add_rule del-tx <index>       # remove a TX rule by its index
  *   ./axdp_add_rule del-rx <index>       # remove an RX rule by its index
+ *   ./axdp_add_rule prio-rate <kbps>     # rate-limit the low-prio XDP SQ (0=off)
  *
  * RX 5-tuple flags (any omitted field is a wildcard):
  *   --sip  <ipv4>          source IPv4
@@ -58,8 +59,9 @@ static void usage(const char *prog)
 		" [--sport <port>] [--dport <port>] [--action <drop|pass|mark>]"
 		" [--mark <hex32>]\n"
 		"  %s del-tx <index>\n"
-		"  %s del-rx <index>\n",
-		prog, prog, prog, prog, prog, prog);
+		"  %s del-rx <index>\n"
+		"  %s prio-rate <kbps>   (0 disables)\n",
+		prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* Parse a dotted-quad into network-order 32-bit. Returns 0 on success. */
@@ -215,9 +217,17 @@ int main(int argc, char **argv)
 		}
 		cmd = AXDP_IOC_DEL_RX_RULE;
 		req.value = (unsigned int)strtoul(argv[2], NULL, 0);
+	} else if (strcmp(argv[1], "prio-rate") == 0) {
+		if (argc != 3) {
+			usage(argv[0]);
+			return 1;
+		}
+		cmd = AXDP_IOC_SET_PRIO_RATE;
+		/* rate in kbps, host byte order (kernel reads @value directly) */
+		req.value = (unsigned int)strtoul(argv[2], NULL, 0);
 	} else {
 		fprintf(stderr,
-			"unknown rule type '%s' (use tx, rx, del-tx or del-rx)\n",
+			"unknown rule type '%s' (use tx, rx, vlan, del-tx, del-rx or prio-rate)\n",
 			argv[1]);
 		return 1;
 	}
@@ -237,6 +247,9 @@ int main(int argc, char **argv)
 
 	if (cmd == AXDP_IOC_DEL_TX_RULE || cmd == AXDP_IOC_DEL_RX_RULE)
 		printf("rule at index %u removed\n", req.value);
+	else if (cmd == AXDP_IOC_SET_PRIO_RATE)
+		printf("sq_prio rate set to %u kbps%s\n", req.value,
+		       req.value ? "" : " (disabled)");
 	else
 		printf("rule added at index %u\n", req.index);
 

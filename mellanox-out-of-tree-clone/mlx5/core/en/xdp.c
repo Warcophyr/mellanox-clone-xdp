@@ -328,6 +328,7 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
   ((u32*) xdp->data_meta)[4] = (flow_tag <<8) + (0x0ff & l4_type);
     
   u8  htype = cqe->rss_hash_type;   // 0 means NIC did NOT hash this packet
+  //echo 1 | sudo tee /sys/module/mlx5_core/parameters/debug
   if(mlx5_debug) {
     printk(KERN_INFO "2 hash type: %d\n",htype);
     printk(KERN_INFO "2 hash: %x timestamp:  %u %u\n",  cqe->rss_hash_result, be32_to_cpu(cqe->timestamp_h),  be32_to_cpu(cqe->timestamp_l));
@@ -340,6 +341,11 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
     return false;
   case XDP_TX:
     if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp)))
+      goto xdp_abort;
+    __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
+    return true;
+  case 5: //XDP_TX_LOW_PRIO
+    if (unlikely(!mlx5e_xmit_xdp_buff(&rq->channel->sq_prio, rq, xdp)))
       goto xdp_abort;
     __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
     return true;
@@ -1102,11 +1108,18 @@ out:
 
 void mlx5e_xdp_rx_poll_complete(struct mlx5e_rq *rq) {
   struct mlx5e_xdpsq *xdpsq = rq->xdpsq;
+  struct mlx5e_xdpsq *sq_prio = &rq->channel->sq_prio;
 
   if (xdpsq->mpwqe.wqe)
     mlx5e_xdp_mpwqe_complete(xdpsq);
 
   mlx5e_xmit_xdp_doorbell(xdpsq);
+
+  /* Flush the low-priority XDP_TX SQ as well. */
+  if (sq_prio->mpwqe.wqe)
+    mlx5e_xdp_mpwqe_complete(sq_prio);
+
+  mlx5e_xmit_xdp_doorbell(sq_prio);
 
   if (test_bit(MLX5E_RQ_FLAG_XDP_REDIRECT, rq->flags)) {
     xdp_do_flush();

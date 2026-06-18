@@ -1925,6 +1925,9 @@ int mlx5e_open_xdpsq(struct mlx5e_channel *c, struct mlx5e_params *params,
 		     struct mlx5e_xdpsq *sq, bool is_redirect)
 {
 	struct mlx5e_create_sq_param csp = {};
+	struct mlx5e_modify_sq_param msp = {0};
+	struct mlx5_rate_limit rl = {0};
+	u16 rl_index;
 	int err;
 
 	err = mlx5e_alloc_xdpsq(c, params, xsk_pool, param, sq, is_redirect);
@@ -1946,6 +1949,27 @@ int mlx5e_open_xdpsq(struct mlx5e_channel *c, struct mlx5e_params *params,
 	if (err)
 		goto err_free_xdpsq;
 
+		
+	if (sq->rate_limit) {
+		rl.rate= sq->rate_limit; //1000000 --> 1 Gbps
+		err = mlx5_rl_add_rate(c->mdev, &rl_index,&rl);
+		if (err) {
+			printk(KERN_ERR "Failed configuring rate: %d\n", err);
+			goto err_free_xdpsq;
+		}
+		msp.curr_state = MLX5_SQC_STATE_RDY;
+		msp.next_state = MLX5_SQC_STATE_RDY;
+		msp.rl_index   = rl_index;
+		msp.rl_update  = true;
+		err = mlx5e_modify_sq(c->mdev, sq->sqn, &msp);
+		if (err) {
+			printk(KERN_ERR "Failed configuring rate %u: %d\n", rl.rate, err);
+			// remove the rate from the table 
+			mlx5_rl_remove_rate(c->mdev, &rl);
+			goto err_free_xdpsq;
+		}
+	}
+	
 	mlx5e_set_xmit_fp(sq, param->is_mpw);
 
 	if (!param->is_mpw && !test_bit(MLX5E_SQ_STATE_XDP_MULTIBUF, &sq->state)) {
@@ -1985,12 +2009,19 @@ err_free_xdpsq:
 
 void mlx5e_close_xdpsq(struct mlx5e_xdpsq *sq)
 {
+	struct mlx5_rate_limit rl = {0};
 	struct mlx5e_channel *c = sq->channel;
 
 	clear_bit(MLX5E_SQ_STATE_ENABLED, &sq->state);
 	synchronize_net(); /* Sync with NAPI. */
 
 	mlx5e_destroy_sq(c->mdev, sq->sqn);
+	
+	if (sq->rate_limit) {
+		rl.rate = sq->rate_limit;
+		mlx5_rl_remove_rate(c->mdev, &rl);
+	}
+	
 	mlx5e_free_xdpsq_descs(sq);
 	mlx5e_free_xdpsq(sq);
 }
@@ -2300,6 +2331,73 @@ static int mlx5e_set_sq_maxrate(struct net_device *dev,
 	return 0;
 }
 
+/*
+ * Runtime rate-limit update for the low-priority XDP SQ (c->sq_prio) on every
+ * channel. @rate is in kbps (0 disables the limiter). Mirrors
+ * mlx5e_set_sq_maxrate() but operates on the per-channel mlx5e_xdpsq. Called
+ * from the A-XDP ioctl path; takes state_lock to serialise against channel
+ * (re)configuration.
+ */
+int mlx5e_axdp_set_prio_rate(struct mlx5e_priv *priv, u32 rate)
+{
+	struct mlx5_core_dev *mdev = priv->mdev;
+	int i, err = 0;
+
+	mutex_lock(&priv->state_lock);
+
+	if (!test_bit(MLX5E_STATE_OPENED, &priv->state)) {
+		err = -ENETDOWN;
+		goto out;
+	}
+
+	for (i = 0; i < priv->channels.num; i++) {
+		struct mlx5e_xdpsq *sq = &priv->channels.c[i]->sq_prio;
+		struct mlx5e_modify_sq_param msp = {0};
+		struct mlx5_rate_limit rl = {0};
+		u16 rl_index = 0;
+
+		if (rate == sq->rate_limit)
+			continue;
+
+		if (sq->rate_limit) {
+			rl.rate = sq->rate_limit;
+			/* free the old table entry before adding the new one */
+			mlx5_rl_remove_rate(mdev, &rl);
+		}
+		sq->rate_limit = 0;
+
+		if (rate) {
+			rl.rate = rate;
+			err = mlx5_rl_add_rate(mdev, &rl_index, &rl);
+			if (err) {
+				mlx5_core_err(mdev,
+					      "axdp: failed adding prio rate %u kbps: %d\n",
+					      rate, err);
+				goto out;
+			}
+		}
+
+		msp.curr_state = MLX5_SQC_STATE_RDY;
+		msp.next_state = MLX5_SQC_STATE_RDY;
+		msp.rl_index   = rl_index;
+		msp.rl_update  = true;
+		err = mlx5e_modify_sq(mdev, sq->sqn, &msp);
+		if (err) {
+			mlx5_core_err(mdev,
+				      "axdp: failed setting prio rate %u kbps on sqn 0x%x: %d\n",
+				      rate, sq->sqn, err);
+			if (rate)
+				mlx5_rl_remove_rate(mdev, &rl);
+			goto out;
+		}
+		sq->rate_limit = rate;
+	}
+
+out:
+	mutex_unlock(&priv->state_lock);
+	return err;
+}
+
 static int mlx5e_set_tx_maxrate(struct net_device *dev, int index, u32 rate)
 {
 	struct mlx5e_priv *priv = netdev_priv(dev);
@@ -2420,6 +2518,9 @@ static int mlx5e_open_queues(struct mlx5e_channel *c,
 	if (err)
 		goto err_close_xdp_sq;
 
+	//sal: test rate limit
+	//printk(KERN_INFO "Test rate limit @ 1Mbps");
+	//c->sq_prio.rate_limit=1000;  //--> 1 Mbps
 	err = mlx5e_open_xdpsq(c, params, &cparam->xdp_sq, NULL, &c->sq_prio, true);
 	if (err)
 		goto err_close_sq_prio;
@@ -4883,6 +4984,7 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 
 	/* install the steering rule after the XDP program is active */
 	if (prog) {
+			
 		int ferr = add_tx_table(priv->mdev, &priv->tx_xdp_flow_ctx);
 		if (ferr)
 			netdev_warn(netdev,

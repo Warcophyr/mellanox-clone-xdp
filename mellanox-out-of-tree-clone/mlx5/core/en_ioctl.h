@@ -75,8 +75,14 @@ struct axdp_ioctl_rule {
 #define AXDP_IOC_DEL_TX_RULE	_IOW(AXDP_IOC_MAGIC,  3, struct axdp_ioctl_rule)
 #define AXDP_IOC_DEL_RX_RULE	_IOW(AXDP_IOC_MAGIC,  4, struct axdp_ioctl_rule)
 #define AXDP_IOC_ADD_VLAN_RULE	_IOWR(AXDP_IOC_MAGIC, 5, struct axdp_ioctl_rule)
+/*
+ * SET_PRIO_RATE: set the packet-pacing rate limit of the low-priority XDP SQ
+ * (c->sq_prio) on every channel. @value carries the rate in kbps (0 disables
+ * the limiter). No flow-table rule is involved.
+ */
+#define AXDP_IOC_SET_PRIO_RATE	_IOW(AXDP_IOC_MAGIC,  6, struct axdp_ioctl_rule)
 
-#define AXDP_IOC_MAXNR		5
+#define AXDP_IOC_MAXNR		6
 
 #ifdef __KERNEL__
 struct mlx5e_priv;
@@ -90,6 +96,13 @@ struct mlx5e_priv;
  */
 int  mlx5e_axdp_ioctl_register(struct mlx5e_priv *priv);
 void mlx5e_axdp_ioctl_unregister(struct mlx5e_priv *priv);
+
+/*
+ * Set the packet-pacing rate (kbps; 0 disables) of the low-priority XDP SQ on
+ * every channel. Defined in en_main.c. Takes priv->state_lock internally, so
+ * the caller must not hold it (nor any lock that nests under it).
+ */
+int  mlx5e_axdp_set_prio_rate(struct mlx5e_priv *priv, u32 rate);
 #endif /* __KERNEL__ */
 
 #endif /* __MLX5_EN_IOCTL_H__ */
