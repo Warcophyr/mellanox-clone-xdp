@@ -220,6 +220,16 @@ static __always_inline __u32 axdp_next_id(void)
 	return (__u32)n + 1;			/* 1..AXDP_MAX_CONNS-1 */
 }
 
+/* Reverse a flow key so we can test the opposite direction. */
+static __always_inline void reverse_key(struct conn_key *k, struct conn_key *r)
+{
+	r->sip   = k->dip;
+	r->dip   = k->sip;
+	r->sport = k->dport;
+	r->dport = k->sport;
+	//r->proto    = k->proto;
+}
+
 /*
  * Example firewall producer. For TCP connection establishment (the initial
  * SYN), it allows the connection only if the source address is inside
@@ -250,6 +260,7 @@ int axdp_rb_producer(struct xdp_md *ctx)
 
 	if (id) {
 		struct conn_state *cs = bpf_map_lookup_elem(&conn_by_id, &id);
+		bpf_printk("match FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",cs->key.sip,cs->key.dip,cs->key.sport,cs->key.dport,id);
 
 		if (cs)
 			__sync_fetch_and_add(&cs->packets, 1);
@@ -259,27 +270,19 @@ int axdp_rb_producer(struct xdp_md *ctx)
 
 	// setup or tear-down or without AXDP
 	if ((void *)(eth + 1) > data_end)
-		return XDP_PASS;
+		return XDP_DROP;
 	if (eth->h_proto != bpf_htons(ETH_P_IP))
 		return XDP_PASS;
 
 	iph = (void *)(eth + 1);
 	if ((void *)(iph + 1) > data_end)
-		return XDP_PASS;
+		return XDP_DROP;
 	if (iph->protocol != IPPROTO_TCP || iph->ihl < 5)
-		return XDP_PASS;
+		return XDP_DROP;
 
 	/* Skip IP options to reach the TCP header. */
 	tcph = (void *)iph + iph->ihl * 4;
 	if ((void *)(tcph + 1) > data_end)
-		return XDP_PASS;
-
-	/* Only gate connection establishment; let established traffic flow. */
-	if (!tcph->syn || tcph->ack)
-		return XDP_PASS;
-
-	/* Firewall: allow new connections only from the internal network. */
-	if ((iph->saddr & INTERNAL_MASK) != INTERNAL_NET)
 		return XDP_DROP;
 
 	__builtin_memset(&key, 0, sizeof(key));
@@ -287,6 +290,9 @@ int axdp_rb_producer(struct xdp_md *ctx)
 	key.dip   = iph->daddr;
 	key.sport = tcph->source;
 	key.dport = tcph->dest;
+
+	struct conn_key rev = {};
+	reverse_key(&key, &rev);
 
 	/* Allowed new internal connection: assign an id, stash its state, and
 	 * install a MARK rule that tags matching packets with that id. The id is
@@ -297,28 +303,42 @@ int axdp_rb_producer(struct xdp_md *ctx)
 		struct conn_state st = {};
 
 		if (!id)
-			return XDP_PASS;
+			return XDP_DROP;
 
-		st.key = key;
-		bpf_map_update_elem(&conntrack, &key, &id, BPF_ANY);
+		if ((key.sip & INTERNAL_MASK) == INTERNAL_NET) {
+			st.key = key;
+			bpf_map_update_elem(&conntrack, &key, &id, BPF_ANY);
+			bpf_map_update_elem(&conntrack, &rev, &id, BPF_ANY);
 
-		/* mark == id: the NIC writes it back into ft_metadata. value is
-		 * unused for MARK. */
-		bpf_map_update_elem(&conn_by_id, &id, &st, BPF_ANY);
-		axdp_emit_rx5(key.sip, key.dip, IPPROTO_TCP,
-			      key.sport, key.dport, AXDP_RX_MARK,
-			      id /* mark */, NULL /* value */,
-			      AXDP_RX_MATCH_NO_RST_FIN);
+			/* mark == id: the NIC writes it back into ft_metadata. value is
+			 * unused for MARK. */
+			bpf_map_update_elem(&conn_by_id, &id, &st, BPF_ANY);
+			bpf_printk("installo FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",key.sip,key.dip,key.sport,key.dport,id);
+			axdp_emit_rx5(key.sip, key.dip, IPPROTO_TCP,
+				      key.sport, key.dport, AXDP_RX_MARK,
+				      id /* mark */, NULL /* value */,
+				      AXDP_RX_MATCH_NO_RST_FIN);
+			axdp_emit_rx5(rev.sip, rev.dip, IPPROTO_TCP,
+				      rev.sport, rev.dport, AXDP_RX_MARK,
+				      id /* mark */, NULL /* value */,
+				      AXDP_RX_MATCH_NO_RST_FIN);
+		}
 	}
 
 #else //no AXDP path: plain firewall, no id / no conn_state table
 	if (!bpf_map_lookup_elem(&conntrack, &key)) {
-		__u32 seen = 1;	/* presence marker; value is unused here */
-		bpf_map_update_elem(&conntrack, &key, &seen, BPF_ANY);
+		if ((key.sip & INTERNAL_MASK) == INTERNAL_NET) {
+			__u32 seen = 1;	/* presence marker; value is unused here */
+			bpf_map_update_elem(&conntrack, &key, &seen, BPF_ANY);
+			bpf_map_update_elem(&conntrack, &rev, &seen, BPF_ANY);
+			bpf_printk("installo flusso TCP con %pI4, %pI4, %d , %d",key.sip,key.dip,key.sport,key.dport);
+		}
+		else 
+			return XDP_DROP;
 	}
 #endif
-
-	return XDP_PASS;
+	bpf_printk("match flusso TCP con %pI4, %pI4, %d , %d",key.sip,key.dip,key.sport,key.dport);
+	return XDP_TX;
 }
 
 char _license[] SEC("license") = "GPL";
