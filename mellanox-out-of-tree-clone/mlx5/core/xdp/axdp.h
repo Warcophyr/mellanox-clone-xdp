@@ -131,7 +131,7 @@ static __always_inline __u32 meta_read_ft_metadata(struct xdp_md *ctx)
 	}
     __u32 *m = (__u32 *)data_meta;
 
-	return m[3];
+	return bpf_ntohl(m[3]);
 }
 
 /* Returns L4 type. */

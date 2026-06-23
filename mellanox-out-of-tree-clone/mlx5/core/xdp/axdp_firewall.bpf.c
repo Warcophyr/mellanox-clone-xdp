@@ -290,12 +290,16 @@ int axdp_rb_producer(struct xdp_md *ctx)
 	__u32 id = meta_read_ft_metadata(ctx);
 
 	if (id) {
+		bpf_printk("match FTE with id=%x",id);
 		struct conn_state *cs = bpf_map_lookup_elem(&conn_by_id, &id);
 
 		if (cs) {
 			bpf_printk("match FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",&cs->key.sip,&cs->key.dip,bpf_ntohs(cs->key.sport),bpf_ntohs(cs->key.dport),id);
 			__sync_fetch_and_add(&cs->packets, 1);
 		}
+		else 
+			bpf_printk("match FTE cs==NULL");
+
 		return XDP_TX;
 	}
 #endif
@@ -331,13 +335,12 @@ int axdp_rb_producer(struct xdp_md *ctx)
 	 * what the fast path uses to recover the conn_state pointer. */
 #ifdef AXDP_TEST
 	if (!bpf_map_lookup_elem(&conntrack, &key)) {
-		__u32 id = axdp_next_id();
-		struct conn_state st = {};
-
-		if (!id)
-			return XDP_DROP;
-
 		if ((key.sip & INTERNAL_MASK) == INTERNAL_NET) {
+			__u32 id = axdp_next_id();
+			struct conn_state st = {};
+
+			if (!id)
+				return XDP_DROP;
 			st.key = key;
 			bpf_map_update_elem(&conntrack, &key, &id, BPF_ANY);
 			bpf_map_update_elem(&conntrack, &rev, &id, BPF_ANY);
