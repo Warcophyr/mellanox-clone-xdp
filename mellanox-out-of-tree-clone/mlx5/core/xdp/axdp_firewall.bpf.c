@@ -29,8 +29,8 @@
 
 /* Internal network the firewall trusts: 10.0.0.0/8. Network byte order so the
  * masked compare against iph->saddr needs no per-packet byte swap. */
-#define INTERNAL_NET  bpf_htonl(0x0A000000)	/* 10.0.0.0   */
-#define INTERNAL_MASK bpf_htonl(0xFF000000)	/* /8         */
+#define INTERNAL_NET  bpf_htonl(0xAC107000)	/* 172.16.112.0 */
+#define INTERNAL_MASK bpf_htonl(0xFFFFFF00)	/* /24         */
 
 #ifndef IPPROTO_TCP
 #define IPPROTO_TCP 6
@@ -230,6 +230,22 @@ static __always_inline void reverse_key(struct conn_key *k, struct conn_key *r)
 	//r->proto    = k->proto;
 }
 
+#define XDP_TX_2 5
+
+__always_inline int stamp_metadata(struct xdp_md *ctx, int value) {
+        void  *data = (void *)(long)ctx->data;
+        __u8  *data_meta  = (void *)(long)ctx->data_meta;
+        __u32 *header = (void *)(long)ctx->data_meta;
+        if ((void *)data_meta + 8 > data) {
+            bpf_printk("no meta space\n");
+            return -1;
+        }
+        header[0] = value;   // metadata value
+        header[1] = 0; // inline_hdr_size=0
+        return 0;
+}
+
+
 /*
  * Example firewall producer. For TCP connection establishment (the initial
  * SYN), it allows the connection only if the source address is inside
@@ -252,6 +268,21 @@ int axdp_rb_producer(struct xdp_md *ctx)
 	struct tcphdr *tcph;
 	struct iphdr *iph;
 
+        /* read metadata */
+        /*
+	__u64 ts=meta_read_timestamp(ctx);            
+        __u32 hash = meta_read_hash(ctx);            
+        __u32 flow_tag= meta_read_flow_tag(ctx); 
+        __u32 ft_metadata= meta_read_ft_metadata(ctx);
+
+        bpf_printk("hash_result: 0x%x \n", hash);
+        bpf_printk("timestamp: %llu\n", ts);
+        bpf_printk("flow_tag: 0x%x\n", flow_tag);
+        bpf_printk("ft_metadata: 0x%x\n", ft_metadata);
+        */
+	if (stamp_metadata(ctx,0))
+            return XDP_DROP;
+
 	/* Fast path: packets a rule already matched carry our id in ft_metadata.
 	 * Recover the per-flow state by id carried by the NIC.
 	 */
@@ -260,10 +291,11 @@ int axdp_rb_producer(struct xdp_md *ctx)
 
 	if (id) {
 		struct conn_state *cs = bpf_map_lookup_elem(&conn_by_id, &id);
-		bpf_printk("match FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",cs->key.sip,cs->key.dip,cs->key.sport,cs->key.dport,id);
 
-		if (cs)
+		if (cs) {
+			bpf_printk("match FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",&cs->key.sip,&cs->key.dip,bpf_ntohs(cs->key.sport),bpf_ntohs(cs->key.dport),id);
 			__sync_fetch_and_add(&cs->packets, 1);
+		}
 		return XDP_TX;
 	}
 #endif
@@ -313,7 +345,7 @@ int axdp_rb_producer(struct xdp_md *ctx)
 			/* mark == id: the NIC writes it back into ft_metadata. value is
 			 * unused for MARK. */
 			bpf_map_update_elem(&conn_by_id, &id, &st, BPF_ANY);
-			bpf_printk("installo FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",key.sip,key.dip,key.sport,key.dport,id);
+			bpf_printk("installo FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport),id);
 			axdp_emit_rx5(key.sip, key.dip, IPPROTO_TCP,
 				      key.sport, key.dport, AXDP_RX_MARK,
 				      id /* mark */, NULL /* value */,
@@ -323,6 +355,10 @@ int axdp_rb_producer(struct xdp_md *ctx)
 				      id /* mark */, NULL /* value */,
 				      AXDP_RX_MATCH_NO_RST_FIN);
 		}
+		else { 
+			bpf_printk("drop flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
+			return XDP_DROP;
+		}
 	}
 
 #else //no AXDP path: plain firewall, no id / no conn_state table
@@ -331,13 +367,16 @@ int axdp_rb_producer(struct xdp_md *ctx)
 			__u32 seen = 1;	/* presence marker; value is unused here */
 			bpf_map_update_elem(&conntrack, &key, &seen, BPF_ANY);
 			bpf_map_update_elem(&conntrack, &rev, &seen, BPF_ANY);
-			bpf_printk("installo flusso TCP con %pI4, %pI4, %d , %d",key.sip,key.dip,key.sport,key.dport);
+			bpf_printk("installo flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
+			return XDP_TX;
 		}
-		else 
+		else { 
+			bpf_printk("drop flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
 			return XDP_DROP;
+		}
 	}
 #endif
-	bpf_printk("match flusso TCP con %pI4, %pI4, %d , %d",key.sip,key.dip,key.sport,key.dport);
+	bpf_printk("NOT match flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
 	return XDP_TX;
 }
 

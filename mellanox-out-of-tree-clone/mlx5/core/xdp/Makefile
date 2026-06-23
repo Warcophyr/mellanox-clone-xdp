@@ -28,9 +28,9 @@ attach-axdp_firewall: axdp_firewall.bpf.o
 
 detach-axdp_firewall:
 	sudo bpftool net detach xdpdrv dev ${ETH}
-	sudo rm -rf /sys/fs/bpf/axdp_ringbuf
-	sudo rm -f /sys/fs/bpf/axdp_rb /sys/fs/bpf/conntrack \
-	           /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
+	sudo rm -f /sys/fs/bpf/conntrack /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
+	sudo rm /sys/fs/bpf/axdp_fir_rodata
+	sudo rm /sys/fs/bpf/axdp_ringbuf
 
 # Load the AXDP_TEST producer (id/conn_state accelerated path).
 attach-axdp_firewall_test: axdp_firewall_test.bpf.o
@@ -39,9 +39,9 @@ attach-axdp_firewall_test: axdp_firewall_test.bpf.o
 
 detach-axdp_firewall_test:
 	sudo bpftool net detach xdpdrv dev ${ETH}
-	sudo rm -rf /sys/fs/bpf/axdp_ringbuf
-	sudo rm -f /sys/fs/bpf/axdp_rb /sys/fs/bpf/conntrack \
-	           /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
+	sudo rm -f /sys/fs/bpf/conntrack /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
+	sudo rm /sys/fs/bpf/axdp_fir_rodata
+	sudo rm /sys/fs/bpf/axdp_ringbuf
 
 # Run the daemon (needs the producer loaded first).
 run-daemon: axdp_rule_daemon
@@ -62,7 +62,10 @@ detach-tx_metadata_flow:
 
 detach:
 	sudo bpftool net detach xdpdrv dev ${ETH}
-	sudo rm /sys/fs/bpf/tx_metadata_flow
+	sudo rm -f /sys/fs/bpf/conntrack /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
+	sudo rm -rf /sys/fs/bpf/axdp_fir_rodata
+	sudo rm -rf /sys/fs/bpf/axdp_ringbuf
+	sudo rm -rf /sys/fs/bpf/axdp_rb
 	#sudo rm /sys/fs/bpf/tx_header
 
 .PHONY: all

@@ -4996,7 +4996,7 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 			netdev_warn(netdev,
 				    "add_rx_table failed: %d\n", ferr);
 		else 
-			printk(KERN_INFO "add_tx_table done");
+			printk(KERN_INFO "add_rx_table done");
 		
 		/* expose the ioctl device so userspace can add/remove rules */
 		ferr = mlx5e_axdp_ioctl_register(priv);
