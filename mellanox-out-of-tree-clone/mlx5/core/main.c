@@ -2188,15 +2188,6 @@ static void mlx5_core_verify_params(void) {
   }
 }
 
-// BTF_SET8_START(bpf_kfunc_example_ids_set)
-// BTF_ID_FLAGS(func, bpf_clone)
-// BTF_SET8_END(bpf_kfunc_example_ids_set)
-
-// static const struct btf_kfunc_id_set bpf_kfunc_example_set = {
-//     .owner = THIS_MODULE,
-//     .set = &bpf_kfunc_example_ids_set,
-// };
-
 static int __init mlx5_init(void) {
   int err;
 
@@ -2219,12 +2210,6 @@ static int __init mlx5_init(void) {
   err = pci_register_driver(&mlx5_core_driver);
   if (err)
     goto err_pci;
-  // err = register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &bpf_kfunc_example_set);
-  // if (err) {
-  //   pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set\n");
-  //   goto err_kfunc;
-  // }
-  printk(KERN_INFO "bpf_kfunc_example: Module loaded successfully\n");
 
   return 0;
 
@@ -2234,7 +2219,6 @@ err_sf:
   mlx5e_cleanup();
 err_debug:
   mlx5_unregister_debugfs();
-  // err_kfunc:
   return err;
 }
 

@@ -308,6 +308,7 @@ const struct xsk_tx_metadata_ops mlx5e_xsk_tx_metadata_ops = {
     .tmo_request_checksum = mlx5e_xsk_request_checksum,
 };
 
+#define XDP_TX_2 5
 /* returns true if packet was consumed by xdp */
 bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
                       struct mlx5e_xdp_buff *mxbuf) {
@@ -344,7 +345,7 @@ bool mlx5e_xdp_handle(struct mlx5e_rq *rq, struct bpf_prog *prog,
       goto xdp_abort;
     __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */
     return true;
-  case 5: //XDP_TX_LOW_PRIO
+  case XDP_TX_2: //XDP_TX_LOW_PRIO
     if (unlikely(!mlx5e_xmit_xdp_buff(&rq->channel->sq_prio, rq, xdp)))
       goto xdp_abort;
     __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags); /* non-atomic */

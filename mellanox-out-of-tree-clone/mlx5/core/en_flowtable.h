@@ -25,7 +25,7 @@ int add_tx_vlan_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 int add_rx_table(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx);
 int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		__be32 sip, __be32 dip, u8 ip_proto, __be16 sport, __be16 dport,
-		u8 action, u32 mark);
+		u8 action, u32 mark, u8 match_flags);
 
 
 int  add_tx_and_dip_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,

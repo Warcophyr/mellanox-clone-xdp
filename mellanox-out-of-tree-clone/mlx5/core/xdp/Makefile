@@ -1,8 +1,17 @@
 # Makefile to compile all *.bpf.c files
-all: tx_header.bpf.o tx_metadata_flow.bpf.o axdp_ringbuf.bpf.o axdp_rule_daemon axdp_add_rule 08_tcp_firewall.bpf.o 08_tcp_firewall_axdp.bpf.o
+all: tx_header.bpf.o tx_metadata_flow.bpf.o axdp_firewall.bpf.o axdp_firewall_test.bpf.o axdp_rule_daemon axdp_add_rule
 
 %.bpf.o: %.bpf.c
 	clang -O2 -target bpf -g -c $< -o $@
+
+# Two variants from the same axdp_firewall.bpf.c source:
+#   axdp_firewall.bpf.o      -- plain firewall (AXDP_TEST off)
+#   axdp_firewall_test.bpf.o -- id/conn_state accelerated path (AXDP_TEST on)
+axdp_firewall.bpf.o: axdp_firewall.bpf.c
+	clang -O2 -target bpf -g -c $< -o $@
+
+axdp_firewall_test.bpf.o: axdp_firewall.bpf.c
+	clang -O2 -target bpf -g -DAXDP_TEST -c $< -o $@
 
 # Userspace daemon that drains the ring buffer and replays rules via ioctl.
 axdp_rule_daemon: axdp_rule_daemon.c axdp_ringbuf.h ../en_ioctl.h
@@ -12,16 +21,27 @@ axdp_rule_daemon: axdp_rule_daemon.c axdp_ringbuf.h ../en_ioctl.h
 axdp_add_rule: axdp_add_rule.c ../en_ioctl.h
 	cc -Wall -O2 -o $@ axdp_add_rule.c
 
-# Load the producer and pin its ring-buffer map at /sys/fs/bpf/axdp_rb.
-attach-axdp_ringbuf: axdp_ringbuf.bpf.o
-	sudo bpftool prog loadall axdp_ringbuf.bpf.o /sys/fs/bpf/axdp_ringbuf pinmaps /sys/fs/bpf
+# Load the plain producer and pin its ring-buffer map at /sys/fs/bpf/axdp_rb.
+attach-axdp_firewall: axdp_firewall.bpf.o
+	sudo bpftool prog loadall axdp_firewall.bpf.o /sys/fs/bpf/axdp_ringbuf pinmaps /sys/fs/bpf
 	sudo bpftool net attach xdpdrv name axdp_rb_producer dev ${ETH}
 
-detach-axdp_ringbuf:
+detach-axdp_firewall:
 	sudo bpftool net detach xdpdrv dev ${ETH}
-	sudo rm -f /sys/fs/bpf/axdp_rb
 	sudo rm -rf /sys/fs/bpf/axdp_ringbuf
-	sudo rm -rf /sys/fs/bpf/axdp_rin_bss
+	sudo rm -f /sys/fs/bpf/axdp_rb /sys/fs/bpf/conntrack \
+	           /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
+
+# Load the AXDP_TEST producer (id/conn_state accelerated path).
+attach-axdp_firewall_test: axdp_firewall_test.bpf.o
+	sudo bpftool prog loadall axdp_firewall_test.bpf.o /sys/fs/bpf/axdp_ringbuf pinmaps /sys/fs/bpf
+	sudo bpftool net attach xdpdrv name axdp_rb_producer dev ${ETH}
+
+detach-axdp_firewall_test:
+	sudo bpftool net detach xdpdrv dev ${ETH}
+	sudo rm -rf /sys/fs/bpf/axdp_ringbuf
+	sudo rm -f /sys/fs/bpf/axdp_rb /sys/fs/bpf/conntrack \
+	           /sys/fs/bpf/conn_by_id /sys/fs/bpf/id_gen
 
 # Run the daemon (needs the producer loaded first).
 run-daemon: axdp_rule_daemon

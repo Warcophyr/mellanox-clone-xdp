@@ -22,6 +22,8 @@
  *   --dport <port>         L4 destination port (requires tcp/udp)
  *   --action <drop|pass|mark>  verdict for matching packets (default drop)
  *   --mark <hex32>         32-bit value written to REG_B (implies --action mark)
+ *   --no-rst-fin           TCP only: match only segments with neither FIN nor
+ *                          RST set (live-connection traffic; ignores teardown)
  *
  * Examples:
  *   ./axdp_add_rule tx 0x2a2a2a2a
@@ -57,7 +59,7 @@ static void usage(const char *prog)
 		"  %s rx <dst_ipv4>\n"
 		"  %s rx [--sip <ipv4>] [--dip <ipv4>] [--proto <tcp|udp|N>]"
 		" [--sport <port>] [--dport <port>] [--action <drop|pass|mark>]"
-		" [--mark <hex32>]\n"
+		" [--mark <hex32>] [--no-rst-fin]\n"
 		"  %s del-tx <index>\n"
 		"  %s del-rx <index>\n"
 		"  %s prio-rate <kbps>   (0 disables)\n",
@@ -108,6 +110,12 @@ static int parse_rx_tuple(int argc, char **argv, struct axdp_ioctl_rule *req)
 	int i;
 
 	for (i = 2; i < argc; i++) {
+		/* Valueless flags first (no operand follows). */
+		if (strcmp(argv[i], "--no-rst-fin") == 0) {
+			req->match_flags |= AXDP_RX_MATCH_NO_RST_FIN;
+			continue;
+		}
+
 		if (i + 1 >= argc) {
 			fprintf(stderr, "missing value for %s\n", argv[i]);
 			return -1;
@@ -153,6 +161,11 @@ static int parse_rx_tuple(int argc, char **argv, struct axdp_ioctl_rule *req)
 	if ((req->src_port || req->dst_port) &&
 	    req->ip_proto != IPPROTO_TCP && req->ip_proto != IPPROTO_UDP) {
 		fprintf(stderr, "--sport/--dport require --proto tcp or udp\n");
+		return -1;
+	}
+	if ((req->match_flags & AXDP_RX_MATCH_NO_RST_FIN) &&
+	    req->ip_proto != IPPROTO_TCP) {
+		fprintf(stderr, "--no-rst-fin requires --proto tcp\n");
 		return -1;
 	}
 	return 0;

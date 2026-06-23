@@ -134,8 +134,6 @@ static __always_inline __u32 meta_read_ft_metadata(struct xdp_md *ctx)
 	return m[3];
 }
 
-
-
 /* Returns L4 type. */
 static __always_inline __u32 meta_read_l4type(struct xdp_md *ctx)
 {

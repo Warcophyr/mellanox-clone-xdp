@@ -623,7 +623,7 @@ enum arfs_type {
 
 int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		__be32 sip, __be32 dip, u8 ip_proto, __be16 sport, __be16 dport,
-		u8 action, u32 mark) {
+		u8 action, u32 mark, u8 match_flags) {
 	struct mlx5_flow_act flow_act = {};
 	struct mlx5_flow_spec *spec = NULL;
 	void *outer_c, *outer_v;
@@ -702,6 +702,18 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 				MLX5_SET(fte_match_set_lyr_2_4, outer_c, tcp_dport, 0xffff);
 				MLX5_SET(fte_match_set_lyr_2_4, outer_v, tcp_dport,
 					 be16_to_cpu(dport));
+			}
+
+			/*
+			 * Opt-in (AXDP_RX_MATCH_NO_RST_FIN): match only segments
+			 * with neither FIN nor RST set, so the rule covers
+			 * live-connection traffic and ignores teardown and reset
+			 * packets. tcp_flags bit layout (see dr_ste.h): FIN = bit0
+			 * (0x01), RST = bit2 (0x04); mask both, require 0.
+			 */
+			if (match_flags & AXDP_RX_MATCH_NO_RST_FIN) {
+				MLX5_SET(fte_match_set_lyr_2_4, outer_c, tcp_flags, 0x05);
+				MLX5_SET(fte_match_set_lyr_2_4, outer_v, tcp_flags, 0x00);
 			}
 		} else if (ip_proto == IPPROTO_UDP) {
 			if (sport) {

@@ -79,7 +79,7 @@ static long axdp_do_add_rx(struct mlx5e_priv *priv, struct axdp_ioctl_rule *req)
 	err = add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,
 			  (__be32)req->src_ip, dip, req->ip_proto,
 			  (__be16)req->src_port, (__be16)req->dst_port,
-			  req->action, req->mark);
+			  req->action, req->mark, req->match_flags);
 	if (err)
 		return err;
 

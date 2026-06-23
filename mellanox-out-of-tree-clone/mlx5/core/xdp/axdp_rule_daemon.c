@@ -113,6 +113,7 @@ static int handle_event(void *ctx, void *data, size_t len)
 	req.dst_port = ev->dst_port;
 	req.ip_proto = ev->ip_proto;
 	req.action   = ev->action;
+	req.match_flags = ev->match_flags;
 	req.mark     = ev->mark;
 	req.vid      = ev->vid;
 

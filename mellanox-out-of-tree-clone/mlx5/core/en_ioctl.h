@@ -32,6 +32,16 @@
 #endif
 
 /*
+ * Optional match qualifiers for an ADD_RX_RULE (axdp_ioctl_rule.match_flags /
+ * axdp_rb_event.match_flags). Zeroed by legacy callers, so the default keeps
+ * the plain 5-tuple match. Guarded so axdp_ringbuf.h can define it too.
+ */
+#ifndef AXDP_RX_MATCH_NO_RST_FIN
+#define AXDP_RX_MATCH_NO_RST_FIN 0x01	/* TCP only: match only segments with
+					 * neither FIN nor RST set */
+#endif
+
+/*
  * Request/response payload for every ioctl.
  *   - For ADD_TX_RULE: @value is the 32-bit WQE metadata tag (reg_a) to DROP.
  *   - For ADD_RX_RULE: the rule matches the IPv4 5-tuple in @src_ip, @dst_ip,
@@ -54,7 +64,8 @@ struct axdp_ioctl_rule {
 	__u16 dst_port;
 	__u8  ip_proto;
 	__u8  action;	/* AXDP_RX_DROP (default) / AXDP_RX_PASS / AXDP_RX_MARK */
-	__u8  _pad[2];
+	__u8  match_flags; /* OR of AXDP_RX_MATCH_* (0 = plain 5-tuple match) */
+	__u8  _pad[1];
 
 	/* ADD_RX_RULE, action AXDP_RX_MARK: 32-bit value written to REG_B. */
 	__u32 mark;

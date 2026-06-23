@@ -6,7 +6,7 @@
 /* test for metadata insertion in TX table
 */
 
-
+#define XDP_TX_2 5
 
 __always_inline int stamp_metadata(struct xdp_md *ctx, int value) {
         void  *data = (void *)(long)ctx->data;
@@ -58,7 +58,7 @@ int xdptx_metadata_flow(struct xdp_md *ctx)
             return XDP_DROP;
         
         //return XDP_TX;
-        return 5;
+        return XDP_TX_2;
 }
 
 char _license[] SEC("license") = "GPL";

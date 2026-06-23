@@ -26,6 +26,12 @@
 #define AXDP_RX_MARK	3	/* MARK: set metadata REG_B to @mark (32 bit) */
 #endif
 
+/* ADD_RX match qualifiers; mirrors AXDP_RX_MATCH_* in en_ioctl.h. */
+#ifndef AXDP_RX_MATCH_NO_RST_FIN
+#define AXDP_RX_MATCH_NO_RST_FIN 0x01	/* TCP only: match only segments with
+					 * neither FIN nor RST set */
+#endif
+
 /* Operation encoded in each ring-buffer record. */
 enum axdp_op {
 	AXDP_OP_ADD_TX = 1,	/* @value = WQE metadata tag (reg_a), network order */
@@ -63,7 +69,8 @@ struct axdp_rb_event {
 	__u16 dst_port;
 	__u8  ip_proto;
 	__u8  action;	/* AXDP_RX_DROP (default) / AXDP_RX_PASS / AXDP_RX_MARK */
-	__u8  _pad[2];
+	__u8  match_flags; /* ADD_RX: OR of AXDP_RX_MATCH_* (0 = plain 5-tuple) */
+	__u8  _pad[1];
 
 	__u32 mark;	/* ADD_RX, action AXDP_RX_MARK: 32-bit REG_B value */
 	__u16 vid;	/* ADD_VLAN: 12-bit C-VLAN id to push              */

@@ -1820,37 +1820,6 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     }
     act = bpf_prog_run_xdp(prog, xdp);
 
-    //sal 
-    /*struct mlx5e_priv *priv = netdev_priv(rq->netdev);
-    u32 *header_xdp = (u32 *)xdp->data_meta;
-    u32 command_axdp = *(header_xdp);
-    header_xdp++;
-    u32 command_value_axdp = *(header_xdp);
-    header_xdp++;
-    printk(KERN_INFO "--> command_axdp=0x%x command_value=0x%x\n", command_axdp, command_value_axdp);
-    
-    if (command_axdp==1) {//ADD TX rule
-      int ferr =add_tx_rule(priv->mdev, &priv->tx_xdp_flow_ctx,command_value_axdp);
-			if (ferr)
-				printk(KERN_INFO "add_tx_rule failed: %d\n", ferr);
-			else 
-				printk(KERN_INFO "add_tx_rule done with meta value (0x%x)\n",command_value_axdp);
-    }
-    if (command_axdp==2) {//ADD RX rule
-      int ferr =add_rx_rule(priv->mdev, &priv->rx_xdp_flow_ctx,command_value_axdp);
-			if (ferr)
-				printk(KERN_INFO "add_tx_rule failed: %d\n", ferr);
-			else 
-				printk(KERN_INFO "add_tx_rule done with meta value (0x%x)\n",command_value_axdp);
-    }
-    if (command_axdp==3) {//DEL TX rule
-      del_rule(&priv->tx_xdp_flow_ctx,command_value_axdp);
-    }
-    if (command_axdp==4) {//DEL RX rule
-      del_rule(&priv->rx_xdp_flow_ctx,command_value_axdp);
-    }
-    xdp->data_meta = header_xdp; */
-
     if (act > 4) {
       int __num_copy = act >> 5;
       int __xdp_clone = (act & 0x1F);
