@@ -14,6 +14,9 @@ struct axdp_flow_ctx {
 	struct mlx5_flow_handle    *rules[AXDP_MAX_RULES];
 	struct mlx5_modify_hdr     *mod_hdr[AXDP_MAX_RULES];  /* NULL if none */
 	struct mlx5_pkt_reformat   *pkt_reformat[AXDP_MAX_RULES]; /* NULL if none */
+	/* AXDP_RX_FWD hairpin: per-rule termination table + its rule (NULL if none) */
+	struct mlx5_flow_table     *term_ft[AXDP_MAX_RULES];
+	struct mlx5_flow_handle    *term_rule[AXDP_MAX_RULES];
 	int                         n_rules;
 };
 

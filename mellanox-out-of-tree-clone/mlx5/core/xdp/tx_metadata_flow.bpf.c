@@ -4,23 +4,8 @@
 
 
 /* test for metadata insertion in TX table
+ * XDP_TX_2 is provided by axdp.h.
 */
-
-#define XDP_TX_2 5
-
-__always_inline int stamp_metadata(struct xdp_md *ctx, int value) {
-        void  *data = (void *)(long)ctx->data;
-        __u8  *data_meta  = (void *)(long)ctx->data_meta;
-        __u32 *header = (void *)(long)ctx->data_meta;
-        if ((void *)data_meta + 8 > data) {
-            bpf_printk("no meta space\n");
-            return -1;
-        }
-        header[0] = value;   // metadata value
-        header[1] = 0; // inline_hdr_size=0
-        return 0;
-}
-
 
 int flag=0;
 
@@ -57,8 +42,11 @@ int xdptx_metadata_flow(struct xdp_md *ctx)
         if (stamp_metadata(ctx,0x0a0a0a0a))
             return XDP_DROP;
         
-        //return XDP_TX;
-        return XDP_TX_2;
+        return XDP_TX;
+        
+	    //sudo ./xdp/axdp_add_rule prio-rate 10000
+	    //low prio queue
+        //return XDP_TX_2;
 }
 
 char _license[] SEC("license") = "GPL";

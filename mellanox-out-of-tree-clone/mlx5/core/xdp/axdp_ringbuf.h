@@ -24,6 +24,7 @@
 #define AXDP_RX_PASS	1	/* ALLOW: let the matching packets continue   */
 #define AXDP_RX_MOD_HDR 2	/* Modify headers                             */
 #define AXDP_RX_MARK	3	/* MARK: set metadata REG_B to @mark (32 bit) */
+#define AXDP_RX_FWD	4	/* HAIRPIN: forward back out the wire (TX)    */
 #endif
 
 /* ADD_RX match qualifiers; mirrors AXDP_RX_MATCH_* in en_ioctl.h. */

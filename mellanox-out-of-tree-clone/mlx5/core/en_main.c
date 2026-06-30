@@ -71,6 +71,8 @@
 #include "qos.h"
 #include "en/trap.h"
 #include "lib/devcom.h"
+#include "fs_core.h"
+#include "steering/fs_dr.h"
 
 bool mlx5e_check_fragmented_striding_rq_cap(struct mlx5_core_dev *mdev, u8 page_shift,
 					    enum mlx5e_mpwrq_umr_mode umr_mode)
@@ -4985,6 +4987,12 @@ static int mlx5e_xdp_set(struct net_device *netdev, struct bpf_prog *prog)
 	/* install the steering rule after the XDP program is active */
 	if (prog) {
 			
+		
+		printk(KERN_INFO "axdp: steering active=%s, SMFS %ssupported\n",
+		       priv->mdev->priv.steering->mode == MLX5_FLOW_STEERING_MODE_SMFS ?
+		       "SMFS" : "DMFS",
+		       mlx5_fs_dr_is_supported(priv->mdev) ? "" : "un");
+
 		int ferr = add_tx_table(priv->mdev, &priv->tx_xdp_flow_ctx);
 		if (ferr)
 			netdev_warn(netdev,

@@ -621,6 +621,64 @@ enum arfs_type {
 	ARFS_NUM_TYPES,
 };
 
+/*
+ * Build a termination table whose single rule forwards everything to the
+ * uplink vport (the wire). A direct FWD_DEST from an uplink-sourced FTE back to
+ * the uplink is dropped by the eswitch loopback prevention; routing it through a
+ * termination table is how mlx5's own TC hairpin offload works (see
+ * mlx5_eswitch_add_termtbl_rule()). The caller then points its FTE at the
+ * returned table (DESTINATION_TYPE_FLOW_TABLE) with FLOW_ACT_IGNORE_FLOW_LEVEL.
+ *
+ * On success returns the table and stores the inner rule in *term_rule; both
+ * must be torn down by the caller (rule first, then table).
+ */
+static struct mlx5_flow_table *
+axdp_create_hairpin_termtbl(struct mlx5_core_dev *mdev,
+			    struct mlx5_flow_handle **term_rule)
+{
+	struct mlx5_flow_table_attr ft_attr = {};
+	struct mlx5_flow_destination dest = {};
+	struct mlx5_flow_act act = {};
+	struct mlx5_flow_namespace *ns;
+	struct mlx5_flow_table *tt;
+	struct mlx5_flow_handle *r;
+	int err;
+
+	ns = mlx5_get_flow_namespace(mdev, MLX5_FLOW_NAMESPACE_FDB);
+	if (!ns)
+		return ERR_PTR(-EOPNOTSUPP);
+
+	/* Terminating, unmanaged table -- same shape the eswitch uses. */
+	ft_attr.flags   = MLX5_FLOW_TABLE_TERMINATION |
+			  MLX5_FLOW_TABLE_UNMANAGED;
+	ft_attr.prio    = FDB_TC_OFFLOAD;
+	ft_attr.level   = 1;
+	ft_attr.max_fte = 1;
+	ft_attr.autogroup.max_num_groups = 1;
+
+	tt = mlx5_create_auto_grouped_flow_table(ns, &ft_attr);
+	if (IS_ERR(tt)) {
+		pr_err("axdp: hairpin termtbl create err=%pe\n", tt);
+		return tt;
+	}
+
+	/* Match-all rule inside the termtbl: forward to the wire. */
+	act.action     = MLX5_FLOW_CONTEXT_ACTION_FWD_DEST;
+	dest.type      = MLX5_FLOW_DESTINATION_TYPE_VPORT;
+	dest.vport.num = MLX5_VPORT_UPLINK;
+
+	r = mlx5_add_flow_rules(tt, NULL, &act, &dest, 1);
+	if (IS_ERR(r)) {
+		err = PTR_ERR(r);
+		pr_err("axdp: hairpin termtbl rule err=%d\n", err);
+		mlx5_destroy_flow_table(tt);
+		return ERR_PTR(err);
+	}
+
+	*term_rule = r;
+	return tt;
+}
+
 int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		__be32 sip, __be32 dip, u8 ip_proto, __be16 sport, __be16 dport,
 		u8 action, u32 mark, u8 match_flags) {
@@ -729,16 +787,31 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		}
 	}
 
-	/* ---- azione: PASS (ALLOW), MOD_HDR, DROP ---- */
+	/* ---- azione: PASS (ALLOW), MOD_HDR, FWD (hairpin to wire), DROP ---- */
 	pr_info("axdp: action %d\n",action);
-	
+
+	/*
+	 * AXDP_RX_FWD is a hairpin: match from-wire traffic and send it straight
+	 * back out the wire (TX) without ever reaching the host. That requires
+	 * forwarding to the uplink vport, which only exists in the FDB/eswitch
+	 * (switchdev) pipe -- the NIC RX BYPASS namespace can only reach TIRs
+	 * (host). Reject the action up front when not in switchdev mode.
+	 */
+	if (action == AXDP_RX_FWD && !switchdev) {
+		pr_err("axdp: RX_FWD (hairpin to wire) requires switchdev mode\n");
+		err = -EOPNOTSUPP;
+		goto out_spec;
+	}
+
 	/*
 	 * MOD_HDR only rewrites metadata; it is not a verdict. MARK/MOD_HDR must
 	 * therefore also forward the packet to a destination, otherwise the rule
 	 * has no terminating action and mlx5 rejects it with -EINVAL. Mark and
-	 * deliver up the normal RX path (same TIR as PASS).
+	 * deliver up the normal RX path (same TIR as PASS). FWD just forwards to
+	 * the uplink vport (no header rewrite).
 	 */
-	flow_act.action = (action == AXDP_RX_PASS)    ? MLX5_FLOW_CONTEXT_ACTION_FWD_DEST  :
+	flow_act.action = (action == AXDP_RX_PASS ||
+			   action == AXDP_RX_FWD)     ? MLX5_FLOW_CONTEXT_ACTION_FWD_DEST  :
 					  (action == AXDP_RX_MOD_HDR ||
 					   action == AXDP_RX_MARK)    ? (MLX5_FLOW_CONTEXT_ACTION_MOD_HDR |
 									 MLX5_FLOW_CONTEXT_ACTION_FWD_DEST) :
@@ -760,7 +833,36 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		spec->flow_context.flow_source =
 			MLX5_FLOW_CONTEXT_FLOW_SOURCE_UPLINK;
 
-	if (action == AXDP_RX_PASS || action == AXDP_RX_MARK ||
+	if (action == AXDP_RX_FWD) {
+		/*
+		 * Hairpin: forward the matched from-wire packet back out the
+		 * uplink (wire/TX), bypassing the host entirely. switchdev was
+		 * asserted above, so the FDB pipe and uplink vport are valid.
+		 *
+		 * A direct FWD_DEST to the uplink would be dropped by the
+		 * eswitch loopback prevention (packet ingressed on the uplink),
+		 * so route it through a termination table and point the FTE at
+		 * that table with IGNORE_FLOW_LEVEL -- the same trick the
+		 * eswitch's own TC hairpin offload uses.
+		 */
+		ctx->term_ft[ctx->n_rules] =
+			axdp_create_hairpin_termtbl(mdev,
+						    &ctx->term_rule[ctx->n_rules]);
+		if (IS_ERR(ctx->term_ft[ctx->n_rules])) {
+			err = PTR_ERR(ctx->term_ft[ctx->n_rules]);
+			ctx->term_ft[ctx->n_rules] = NULL;
+			goto out_spec;
+		}
+
+		dst = kzalloc(sizeof(*dst), GFP_KERNEL);
+		if (!dst) {
+			err = -ENOMEM;
+			goto out_spec;
+		}
+		dst->type = MLX5_FLOW_DESTINATION_TYPE_FLOW_TABLE;
+		dst->ft   = ctx->term_ft[ctx->n_rules];
+		flow_act.flags |= FLOW_ACT_IGNORE_FLOW_LEVEL;
+	} else if (action == AXDP_RX_PASS || action == AXDP_RX_MARK ||
 	    action == AXDP_RX_MOD_HDR) {
 		dst = kzalloc(sizeof(*dst), GFP_KERNEL);
 		if (!dst) {
@@ -850,7 +952,8 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 		&sip, &dip, ip_proto, be16_to_cpu(sport), be16_to_cpu(dport),
 		(action == AXDP_RX_PASS) ? "PASS" :
 		(action == AXDP_RX_MARK) ? "MARK" :
-		(action == AXDP_RX_MOD_HDR) ? "MOD_HDR" : "DROP",
+		(action == AXDP_RX_MOD_HDR) ? "MOD_HDR" :
+		(action == AXDP_RX_FWD) ? "FWD(hairpin->wire)" : "DROP",
 		(action == AXDP_RX_MARK) ? mark : 0);
 
 	if (dst)
@@ -859,6 +962,21 @@ int add_rx_rule(struct mlx5_core_dev *mdev, struct axdp_flow_ctx *ctx,
 	return 0;
 
 out_spec:
+	/*
+	 * n_rules has not been bumped on any error path, so a hairpin termtbl
+	 * created above for this (failed) rule is still parked at [n_rules].
+	 * Tear it down (rule first, then table) before returning.
+	 */
+	if (ctx->term_ft[ctx->n_rules]) {
+		if (ctx->term_rule[ctx->n_rules]) {
+			mlx5_del_flow_rules(ctx->term_rule[ctx->n_rules]);
+			ctx->term_rule[ctx->n_rules] = NULL;
+		}
+		mlx5_destroy_flow_table(ctx->term_ft[ctx->n_rules]);
+		ctx->term_ft[ctx->n_rules] = NULL;
+	}
+	if (dst)
+		kfree(dst);
 	kvfree(spec);
 out_ft:
 	//mlx5_destroy_flow_table(ctx->ft);
@@ -883,6 +1001,15 @@ void del_rule(struct axdp_flow_ctx *ctx, u32 index)
 		mlx5_packet_reformat_dealloc(ctx->mdev, ctx->pkt_reformat[index]);
 		ctx->pkt_reformat[index] = NULL;
 	}
+	/* AXDP_RX_FWD hairpin termtbl: tear down rule first, then the table. */
+	if (ctx->term_rule[index]) {
+		mlx5_del_flow_rules(ctx->term_rule[index]);
+		ctx->term_rule[index] = NULL;
+	}
+	if (ctx->term_ft[index]) {
+		mlx5_destroy_flow_table(ctx->term_ft[index]);
+		ctx->term_ft[index] = NULL;
+	}
 	if (ctx->n_rules)
 		ctx->n_rules--;
 }
@@ -891,6 +1018,7 @@ void del_table_rule(struct axdp_flow_ctx *ctx)
 {
 	int i;
 	for (i = 0; i < ctx->n_rules; i++) {
+		/* Drop the main FTE first; it references the termtbl below. */
 		if (ctx->rules[i])
 			mlx5_del_flow_rules(ctx->rules[i]);
 		if (ctx->mod_hdr[i]) {
@@ -900,6 +1028,15 @@ void del_table_rule(struct axdp_flow_ctx *ctx)
 		if (ctx->pkt_reformat[i]) {
 			mlx5_packet_reformat_dealloc(ctx->mdev, ctx->pkt_reformat[i]);
 			ctx->pkt_reformat[i] = NULL;
+		}
+		/* AXDP_RX_FWD hairpin termtbl: rule first, then table. */
+		if (ctx->term_rule[i]) {
+			mlx5_del_flow_rules(ctx->term_rule[i]);
+			ctx->term_rule[i] = NULL;
+		}
+		if (ctx->term_ft[i]) {
+			mlx5_destroy_flow_table(ctx->term_ft[i]);
+			ctx->term_ft[i] = NULL;
 		}
 	}
 	ctx->n_rules = 0;

@@ -3,11 +3,41 @@
 /* ------------------------------------------------------------------ */
 
 #include <linux/bpf.h>
+#include <linux/in.h>
+#include <linux/if_ether.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
+#include <linux/udp.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_endian.h>
 
 #define AXDP_PASS 0x1
 #define METADATA_LEN 20
+#define XDP_TX_2 5
 
+struct flow_key {
+	__be32 src_ip;
+	__be32 dst_ip;
+	__be16 src_port;
+	__be16 dst_port;
+	__u8   proto;
+	__u8   pad[3];
+};
+
+
+
+static __always_inline int stamp_metadata(struct xdp_md *ctx, int value) {
+        void  *data = (void *)(long)ctx->data;
+        __u8  *data_meta  = (void *)(long)ctx->data_meta;
+        __u32 *header = (void *)(long)ctx->data_meta;
+        if ((void *)data_meta + 8 > data) {
+            bpf_printk("no meta space\n");
+            return -1;
+        }
+        header[0] = value;   // metadata value
+        header[1] = 0; // inline_hdr_size=0
+        return 0;
+}
 /* Returns 0 on success with *ts filled, -1 on error. */
 static __always_inline __u64 meta_read_timestamp(struct xdp_md *ctx)
 {
@@ -160,4 +190,48 @@ static __always_inline __u32 meta_read_flow_tag(struct xdp_md *ctx)
     __u32 *m = (__u32 *)data_meta;
 
 	return (0x0fff & (m[4]>>8));
+}
+
+
+/* ------------------------------------------------------------------ */
+/* small parse helper used by every program                            */
+/* ------------------------------------------------------------------ */
+static __always_inline int
+parse_5tuple(void *data, void *data_end, struct flow_key *k)
+{
+	struct ethhdr *eth = data;
+
+	if ((void *)(eth + 1) > data_end)
+		return -1;
+	if (eth->h_proto != bpf_htons(ETH_P_IP))
+		return -1;
+
+	struct iphdr *iph = (void *)(eth + 1);
+
+	if ((void *)(iph + 1) > data_end)
+		return -1;
+
+	k->src_ip = iph->saddr;
+	k->dst_ip = iph->daddr;
+	k->proto  = iph->protocol;
+
+	if (iph->protocol == IPPROTO_TCP) {
+		struct tcphdr *th = (void *)iph + iph->ihl * 4;
+
+		if ((void *)(th + 1) > data_end)
+			return -1;
+		k->src_port = th->source;
+		k->dst_port = th->dest;
+	} else if (iph->protocol == IPPROTO_UDP) {
+		struct udphdr *uh = (void *)iph + iph->ihl * 4;
+
+		if ((void *)(uh + 1) > data_end)
+			return -1;
+		k->src_port = uh->source;
+		k->dst_port = uh->dest;
+	} else {
+		k->src_port = 0;
+		k->dst_port = 0;
+	}
+	return 0;
 }

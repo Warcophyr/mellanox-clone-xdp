@@ -28,17 +28,21 @@
 #define ETH_P_IP 0x0800
 #endif
 
-/* Internal network the firewall trusts: 10.0.0.0/8. Network byte order so the
- * masked compare against iph->saddr needs no per-packet byte swap. */
-#define INTERNAL_NET  bpf_htonl(0xAC107000)	/* 172.16.112.0 */
-#define INTERNAL_MASK bpf_htonl(0xFFFFFF00)	/* /24         */
-
 #ifndef IPPROTO_TCP
 #define IPPROTO_TCP 6
 #endif
 #ifndef IPPROTO_UDP
 #define IPPROTO_UDP 17
 #endif
+
+
+struct flow_stats {
+	__u64 packets;
+	__u64 bytes;
+	__u64 last_ts;       /* previous arrival, ns        */
+	__u64 sum_iat;       /* sum of inter-arrival times  */
+};
+
 
 /* 1 MiB ring buffer; pinned by name so the daemon can find it at
  * /sys/fs/bpf/axdp_rb when loaded with `bpftool prog loadall ... pinmaps`. */
@@ -173,14 +177,12 @@ struct conn_state {
 	__u64 packets;		/* fast-path hits for this flow */
 };
 
-/* 5-tuple -> assigned id. LRU so eviction is automatic; doubles as the
- * "have we already marked this flow?" dedup set. */
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
-	__uint(max_entries, 65536);
-	__type(key, struct conn_key);
-	__type(value, __u32);
-} conntrack SEC(".maps");
+	__type(key, struct flow_key);
+	__type(value, struct flow_stats);
+	__uint(max_entries, 2000000);
+} telemetry SEC(".maps");
 
 /* Number of conn_state slots. The id doubles as a dense array index, so this
  * also bounds how many flows can be fast-path accelerated at once. */
@@ -221,15 +223,8 @@ static __always_inline __u32 axdp_next_id(void)
 	return (__u32)n + 1;			/* 1..AXDP_MAX_CONNS-1 */
 }
 
-/* Reverse a flow key so we can test the opposite direction. */
-static __always_inline void reverse_key(struct conn_key *k, struct conn_key *r)
-{
-	r->sip   = k->dip;
-	r->dip   = k->sip;
-	r->sport = k->dport;
-	r->dport = k->sport;
-	//r->proto    = k->proto;
-}
+
+
 
 /*
  * Example firewall producer. For TCP connection establishment (the initial
@@ -244,27 +239,15 @@ static __always_inline void reverse_key(struct conn_key *k, struct conn_key *r)
  */
 
 SEC("xdp")
-int axdp_rb_producer(struct xdp_md *ctx)
+int axdp_telemetry(struct xdp_md *ctx)
 {
 	void *data     = (void *)(long)ctx->data;
 	void *data_end = (void *)(long)ctx->data_end;
-	struct ethhdr *eth = data;
-	struct conn_key key;
-	struct tcphdr *tcph;
-	struct iphdr *iph;
-
-        /* read metadata */
-        /*
-	__u64 ts=meta_read_timestamp(ctx);            
-        __u32 hash = meta_read_hash(ctx);            
-        __u32 flow_tag= meta_read_flow_tag(ctx); 
-        __u32 ft_metadata= meta_read_ft_metadata(ctx);
-
-        bpf_printk("hash_result: 0x%x \n", hash);
-        bpf_printk("timestamp: %llu\n", ts);
-        bpf_printk("flow_tag: 0x%x\n", flow_tag);
-        bpf_printk("ft_metadata: 0x%x\n", ft_metadata);
-        */
+	struct flow_stats *s =NULL;
+	/* read metadata */
+	
+	
+    //avoid inline header    
 	if (stamp_metadata(ctx,0))
             return XDP_DROP;
 
@@ -272,101 +255,60 @@ int axdp_rb_producer(struct xdp_md *ctx)
 	 * Recover the per-flow state by id carried by the NIC.
 	 */
 #ifdef AXDP_TEST
+	__u64 ts=meta_read_timestamp(ctx);            
 	__u32 id = meta_read_ft_metadata(ctx);
 
 	if (id) {
 		bpf_printk("match FTE with id=%x",id);
-		struct conn_state *cs = bpf_map_lookup_elem(&conn_by_id, &id);
-
-		if (cs) {
-			//bpf_printk("match FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",&cs->key.sip,&cs->key.dip,bpf_ntohs(cs->key.sport),bpf_ntohs(cs->key.dport),id);
-			__sync_fetch_and_add(&cs->packets, 1);
-		}
-
+		s = bpf_map_lookup_elem(&conn_by_id, &id);
+		if (!s)
+			return XDP_TX;
+		/* Per-packet update — runs for every packet, the whole point. */
+		__u32 len = data_end - data;
+		__u64 iat = ts - s->last_ts;
+		s->packets += 1;
+		s->bytes   += len;
+		s->sum_iat += iat;
+		s->last_ts  = ts;
 		return XDP_TX;
 	}
-#endif
+#else
+	__u64 ts=bpf_ktime_get_ns();
+#endif    
 
-	// setup or tear-down or without AXDP
-	if ((void *)(eth + 1) > data_end)
-		return XDP_DROP;
-	if (eth->h_proto != bpf_htons(ETH_P_IP))
-		return XDP_PASS;
+	struct flow_key k = {};
 
-	iph = (void *)(eth + 1);
-	if ((void *)(iph + 1) > data_end)
-		return XDP_DROP;
-	if (iph->protocol != IPPROTO_TCP || iph->ihl < 5)
-		return XDP_DROP;
+	if (parse_5tuple(data, data_end, &k) < 0)
+		return XDP_TX;
+	__u32 len = data_end - data;
 
-	/* Skip IP options to reach the TCP header. */
-	tcph = (void *)iph + iph->ihl * 4;
-	if ((void *)(tcph + 1) > data_end)
-		return XDP_DROP;
-
-	__builtin_memset(&key, 0, sizeof(key));
-	key.sip   = iph->saddr;
-	key.dip   = iph->daddr;
-	key.sport = tcph->source;
-	key.dport = tcph->dest;
-
-	struct conn_key rev = {};
-	reverse_key(&key, &rev);
-
-	/* Allowed new internal connection: assign an id, stash its state, and
-	 * install a MARK rule that tags matching packets with that id. The id is
-	 * what the fast path uses to recover the conn_state pointer. */
+	s = bpf_map_lookup_elem(&telemetry, &k);
+	if (!s) {
+		struct flow_stats ns = {
+			.packets = 1, .bytes = len, .last_ts = ts, .sum_iat = 0,
+		};
+		bpf_map_update_elem(&telemetry, &k, &ns, BPF_ANY);
+	
 #ifdef AXDP_TEST
-	if (!bpf_map_lookup_elem(&conntrack, &key)) {
-		if ((key.sip & INTERNAL_MASK) == INTERNAL_NET) {
-			__u32 id = axdp_next_id();
-			struct conn_state st = {};
-
-			if (!id)
-				return XDP_DROP;
-			st.key = key;
-			bpf_map_update_elem(&conntrack, &key, &id, BPF_ANY);
-			bpf_map_update_elem(&conntrack, &rev, &id, BPF_ANY);
-
-			/* mark == id: the NIC writes it back into ft_metadata. value is
-			 * unused for MARK. */
-			bpf_map_update_elem(&conn_by_id, &id, &st, BPF_ANY);
-			bpf_printk("installo FTE con flusso TCP con %pI4, %pI4, %d , %d id=%d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport),id);
-			axdp_emit_rx5(key.sip, key.dip, IPPROTO_TCP,
-				      key.sport, key.dport, AXDP_RX_MARK,
+		__u32 id = axdp_next_id();
+		/* mark == id: the NIC writes it back into ft_metadata. value is
+		 * unused for MARK. 
+		 */
+		bpf_map_update_elem(&conn_by_id, &id, &ns, BPF_ANY);
+		axdp_emit_rx5(k.src_ip,k.dst_ip,k.src_port,k.dst_port,k.proto, AXDP_RX_MARK,
 				      id /* mark */, NULL /* value */,
-				      AXDP_RX_MATCH_NO_RST_FIN);
-			axdp_emit_rx5(rev.sip, rev.dip, IPPROTO_TCP,
-				      rev.sport, rev.dport, AXDP_RX_MARK,
-				      id /* mark */, NULL /* value */,
-				      AXDP_RX_MATCH_NO_RST_FIN);
-			axdp_emit_rx5(0, 0, IPPROTO_TCP,
-				      0, 0, AXDP_RX_MARK,
-				      id /* mark */, NULL /* value */,
-				      AXDP_RX_MATCH_NO_RST_FIN);
-		}
-		else { 
-			//bpf_printk("drop flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
-			return XDP_DROP;
-		}
+				      0);
+#endif	
+		return XDP_TX;
 	}
+	
+/* Per-packet update — runs for every packet, the whole point. */
+	__u64 iat = ts - s->last_ts;
+	s->packets += 1;
+	s->bytes   += len;
+	s->sum_iat += iat;
+	s->last_ts  = ts;
 
-#else //no AXDP path: plain firewall, no id / no conn_state table
-	if (!bpf_map_lookup_elem(&conntrack, &key)) {
-		if ((key.sip & INTERNAL_MASK) == INTERNAL_NET) {
-			__u32 seen = 1;	/* presence marker; value is unused here */
-			bpf_map_update_elem(&conntrack, &key, &seen, BPF_ANY);
-			bpf_map_update_elem(&conntrack, &rev, &seen, BPF_ANY);
-			bpf_printk("installo flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
-			return XDP_TX;
-		}
-		else { 
-			bpf_printk("drop flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
-			return XDP_DROP;
-		}
-	}
-#endif
-	//bpf_printk("NOT match flusso TCP con %pI4, %pI4, %d , %d",&key.sip,&key.dip,bpf_ntohs(key.sport),bpf_ntohs(key.dport));
 	return XDP_TX;
 }
 

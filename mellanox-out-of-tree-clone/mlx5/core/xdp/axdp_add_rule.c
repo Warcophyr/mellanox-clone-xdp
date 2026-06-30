@@ -20,7 +20,9 @@
  *   --proto <tcp|udp|N>    L4 protocol (name or number)
  *   --sport <port>         L4 source port      (requires tcp/udp)
  *   --dport <port>         L4 destination port (requires tcp/udp)
- *   --action <drop|pass|mark>  verdict for matching packets (default drop)
+ *   --action <drop|pass|mark|tx>  verdict for matching packets (default drop)
+ *                          tx = hairpin: forward straight back out the wire,
+ *                          bypassing the host (switchdev/FDB mode only)
  *   --mark <hex32>         32-bit value written to REG_B (implies --action mark)
  *   --no-rst-fin           TCP only: match only segments with neither FIN nor
  *                          RST set (live-connection traffic; ignores teardown)
@@ -33,6 +35,7 @@
  *   ./axdp_add_rule rx --sip 10.0.0.1 --dip 10.0.0.2 --proto udp --sport 53 --dport 5353
  *   ./axdp_add_rule rx --dip 10.0.0.2 --proto tcp --dport 443 --action pass
  *   ./axdp_add_rule rx --dip 10.0.0.2 --proto tcp --dport 443 --mark 0xdeadbeef
+ *   ./axdp_add_rule rx --dip 10.0.0.2 --proto udp --dport 4789 --action tx
  *   ./axdp_add_rule del-tx 0
  *   ./axdp_add_rule del-rx 0
  */
@@ -58,7 +61,7 @@ static void usage(const char *prog)
 		"  %s vlan <meta_tag_hex> <vid>\n"
 		"  %s rx <dst_ipv4>\n"
 		"  %s rx [--sip <ipv4>] [--dip <ipv4>] [--proto <tcp|udp|N>]"
-		" [--sport <port>] [--dport <port>] [--action <drop|pass|mark>]"
+		" [--sport <port>] [--dport <port>] [--action <drop|pass|mark|tx>]"
 		" [--mark <hex32>] [--no-rst-fin]\n"
 		"  %s del-tx <index>\n"
 		"  %s del-rx <index>\n"
@@ -144,9 +147,11 @@ static int parse_rx_tuple(int argc, char **argv, struct axdp_ioctl_rule *req)
 				req->action = AXDP_RX_PASS;
 			else if (strcmp(a, "mark") == 0)
 				req->action = AXDP_RX_MARK;
+			else if (strcmp(a, "tx") == 0 || strcmp(a, "fwd") == 0)
+				req->action = AXDP_RX_FWD;
 			else {
 				fprintf(stderr,
-					"invalid action '%s' (drop|pass|mark)\n", a);
+					"invalid action '%s' (drop|pass|mark|tx)\n", a);
 				return -1;
 			}
 		} else if (strcmp(argv[i], "--mark") == 0) {
