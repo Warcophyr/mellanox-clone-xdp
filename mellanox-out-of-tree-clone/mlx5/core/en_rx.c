@@ -1738,10 +1738,10 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
                                                  struct mlx5_cqe64 *cqe,
                                                  u32 cqe_bcnt) {
 
-  // ktime_t start_time, end_time;
-  // ktime_t elapsed; // This is key - store the ktime_t delta
-  // s64 elapsed_ns;
-
+  // pr_err("mlx5e_skb_from_cqe_linear called\n");
+  ktime_t start_time, end_time;
+  ktime_t elapsed; // This is key - store the ktime_t delta
+  s64 elapsed_ns;
   struct mlx5e_frag_page *frag_page = wi->frag_page;
   u16 rx_headroom = rq->buff.headroom;
   struct bpf_prog *prog;
@@ -1777,7 +1777,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
     /* Original packets must start with no metadata visible to BPF. */
     mxbuf.xdp.data_meta = xdp->data;
+    // start_time = ktime_get();
     act = bpf_prog_run_xdp(prog, xdp);
+
     // printk("XDP action: %d\n", act);
     if (act > 4) {
       int __num_copy = act >> 5;
@@ -1800,131 +1802,113 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
     switch (act) {
     case XDP_CLONE_PASS: {
+      // end_time = ktime_get();
+      // elapsed = ktime_sub(end_time, start_time);
+      // elapsed_ns = ktime_to_ns(elapsed);
+      // // if (elapsed_ns > 1000) {
+      // trace_printk("mlx5e_skb_from_cqe_linear took %lld ns
+      // (%lld.%03lldµs)\n",
+      //              elapsed_ns, elapsed_ns / 1000, elapsed_ns % 1000);
+      // }
       u32 actcpy;
       rx_headroom = mxbuf.xdp.data - mxbuf.xdp.data_hard_start;
       metasize = mxbuf.xdp.data - mxbuf.xdp.data_meta;
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
-
+      u32 goto_flag = 0;
       // skb = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy + 1)));
-      skb = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
-      if (unlikely(!skb)) {
-        rq->stats->buff_alloc_err++;
-        return NULL;
-      }
 
-      skb_reserve(skb, rx_headroom);
+      // if (num_copy == 1) {
+      //   /* Fast path clone_pass(1): zero-copy dell'originale sulla pagina RX
+      //    * esistente. Evita napi_alloc_skb + memcpy per l'originale, come fa
+      //    * XDP_PASS normale. */
 
-      skb_put_data(skb, data, cqe_bcnt);
+      //   /* Singola copia: riesegue XDP e gestisce il risultato */
+      //   struct sk_buff *skbcpy;
+      //   {
+      //     const int __cp1 = 1;
+      //     if (unlikely(
+      //             (size_t)((char *)xdp->data - (char *)xdp->data_hard_start)
+      //             < sizeof(__cp1))) {
+      //       trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+      //       rq->stats->xdp_drop++;
+      //       goto_flag = 1;
+      //     }
+      //     mxbuf.xdp.data_meta = xdp->data - sizeof(__cp1);
+      //     __builtin_memcpy(mxbuf.xdp.data_meta, &__cp1, sizeof(__cp1));
+      //     actcpy = bpf_prog_run_xdp(prog, xdp);
+      //     mxbuf.xdp.data_meta = xdp->data;
+      //     if (unlikely(actcpy > 4)) {
+      //       trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
+      //       rq->stats->xdp_drop++;
+      //       goto_flag = 1;
+      //     }
+      //     switch (actcpy) {
+      //     case XDP_PASS: {
+      //       // skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy +
+      //       // 1)));
+      //       // skbcpy = napi_alloc_skb(rq->cq.napi, cqe_bcnt * 2);
+      //       // skbcpy = napi_alloc_skb(rq->cq.napi, cqe_bcnt + (cqe_bcnt /
+      //       2)); skbcpy = napi_alloc_skb(rq->cq.napi, rx_headroom +
+      //       cqe_bcnt); if (unlikely(!skbcpy)) {
+      //         rq->stats->buff_alloc_err++;
+      //         break;
+      //       }
+      //       skb_reserve(skbcpy, rx_headroom);
+      //       skb_put_data(skbcpy, data, cqe_bcnt);
 
-      if (metasize)
-        skb_metadata_set(skb, metasize);
+      //       if (metasize)
+      //         skb_metadata_set(skbcpy, metasize);
 
-      /* queue up for recycling/reuse */
-      skb_mark_for_recycle(skb);
-      frag_page->frags++;
-      if (skb) {
-
-        mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skb);
-
-        if (mlx5e_cqe_regb_chain(cqe))
-          if (!mlx5e_tc_update_skb_nic(cqe, skb)) {
-            dev_kfree_skb_any(skb);
-            return NULL;
-          }
-
-        napi_gro_receive(rq->cq.napi, skb);
-      }
-
-      if (num_copy == 1) {
-        /* Fast path clone_pass(1): zero-copy dell'originale sulla pagina RX
-         * esistente. Evita napi_alloc_skb + memcpy per l'originale, come fa
-         * XDP_PASS normale. */
-
-        /* Singola copia: riesegue XDP e gestisce il risultato */
-        struct sk_buff *skbcpy;
-        {
-          const int __cp1 = 1;
-          if (unlikely(
-                  (size_t)((char *)xdp->data - (char *)xdp->data_hard_start) <
-                  sizeof(__cp1))) {
-            trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
-            rq->stats->xdp_drop++;
-            goto xdp_clone_pass_exit;
-          }
-          mxbuf.xdp.data_meta = xdp->data - sizeof(__cp1);
-          __builtin_memcpy(mxbuf.xdp.data_meta, &__cp1, sizeof(__cp1));
-          actcpy = bpf_prog_run_xdp(prog, xdp);
-          mxbuf.xdp.data_meta = xdp->data;
-          if (unlikely(actcpy > 4)) {
-            trace_xdp_exception(rq->netdev, prog, XDP_ABORTED);
-            rq->stats->xdp_drop++;
-            goto xdp_clone_pass_exit;
-          }
-          switch (actcpy) {
-          case XDP_PASS: {
-            // skbcpy = napi_alloc_skb(rq->cq.napi, (cqe_bcnt * (num_copy +
-            // 1)));
-            // skbcpy = napi_alloc_skb(rq->cq.napi, cqe_bcnt * 2);
-            // skbcpy = napi_alloc_skb(rq->cq.napi, cqe_bcnt + (cqe_bcnt / 2));
-            skbcpy = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
-            if (unlikely(!skbcpy)) {
-              rq->stats->buff_alloc_err++;
-              break;
-            }
-            skb_reserve(skbcpy, rx_headroom);
-            skb_put_data(skbcpy, data, cqe_bcnt);
-
-            if (metasize)
-              skb_metadata_set(skbcpy, metasize);
-
-            mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skbcpy);
-            if (mlx5e_cqe_regb_chain(cqe))
-              if (!mlx5e_tc_update_skb_nic(cqe, skbcpy)) {
-                dev_kfree_skb_any(skbcpy);
-                break;
-              }
-            napi_gro_receive(rq->cq.napi, skbcpy);
-            goto xdp_clone_pass_exit;
-          } break;
-          case XDP_TX: {
-            page_pool_ref_page(frag_page->page);
-            if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
-              page_pool_unref_page(frag_page->page, 1);
-              trace_xdp_exception(rq->netdev, prog, actcpy);
-              rq->stats->xdp_drop++;
-              goto xdp_clone_pass_exit;
-            }
-            __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
-            goto xdp_clone_pass_exit;
-          } break;
-          case XDP_REDIRECT: {
-            err = xdp_do_redirect(rq->netdev, xdp, prog);
-            if (unlikely(err)) {
-              trace_xdp_exception(rq->netdev, prog, actcpy);
-              rq->stats->xdp_drop++;
-              goto xdp_clone_pass_exit;
-            }
-            __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
-            __set_bit(MLX5E_RQ_FLAG_XDP_REDIRECT, rq->flags);
-            rq->stats->xdp_redirect++;
-            goto xdp_clone_pass_exit;
-          }
-          default:
-            bpf_warn_invalid_xdp_action(rq->netdev, prog, actcpy);
-            fallthrough;
-          case XDP_ABORTED:
-            trace_xdp_exception(rq->netdev, prog, actcpy);
-            fallthrough;
-          case XDP_DROP:
-            rq->stats->xdp_drop++;
-            goto xdp_clone_pass_exit;
-          }
-        }
-        goto xdp_clone_pass_exit;
-      }
+      //       mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skbcpy);
+      //       if (mlx5e_cqe_regb_chain(cqe))
+      //         if (!mlx5e_tc_update_skb_nic(cqe, skbcpy)) {
+      //           dev_kfree_skb_any(skbcpy);
+      //           break;
+      //         }
+      //       napi_gro_receive(rq->cq.napi, skbcpy);
+      //       goto xdp_clone_pass_exit;
+      //     } break;
+      //     case XDP_TX: {
+      //       page_pool_ref_page(frag_page->page);
+      //       if (unlikely(!mlx5e_xmit_xdp_buff(rq->xdpsq, rq, xdp))) {
+      //         page_pool_unref_page(frag_page->page, 1);
+      //         trace_xdp_exception(rq->netdev, prog, actcpy);
+      //         rq->stats->xdp_drop++;
+      //         goto_flag = 1;
+      //       }
+      //       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
+      //       goto_flag = 1;
+      //     } break;
+      //     case XDP_REDIRECT: {
+      //       err = xdp_do_redirect(rq->netdev, xdp, prog);
+      //       if (unlikely(err)) {
+      //         trace_xdp_exception(rq->netdev, prog, actcpy);
+      //         rq->stats->xdp_drop++;
+      //         goto_flag = 1;
+      //       }
+      //       __set_bit(MLX5E_RQ_FLAG_XDP_XMIT, rq->flags);
+      //       __set_bit(MLX5E_RQ_FLAG_XDP_REDIRECT, rq->flags);
+      //       rq->stats->xdp_redirect++;
+      //       goto_flag = 1;
+      //     }
+      //     default:
+      //       bpf_warn_invalid_xdp_action(rq->netdev, prog, actcpy);
+      //       fallthrough;
+      //     case XDP_ABORTED:
+      //       trace_xdp_exception(rq->netdev, prog, actcpy);
+      //       fallthrough;
+      //     case XDP_DROP:
+      //       rq->stats->xdp_drop++;
+      //       goto_flag = 1;
+      //     }
+      //   }
+      //   goto_flag = 1;
+      // }
       // /* Path generale (num_copy != 1): alloca e copia come prima */
 
+      if (goto_flag)
+        goto xdp_clone_pass_exit;
       struct page *page[num_copy];
       void *copy_va[num_copy];
       struct xdp_buff copy_xdp[num_copy];
@@ -2025,6 +2009,36 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         case XDP_DROP:
           rq->stats->xdp_drop++;
           break;
+        }
+      }
+      {
+        skb = napi_alloc_skb(rq->cq.napi, rx_headroom + cqe_bcnt);
+        if (unlikely(!skb)) {
+          rq->stats->buff_alloc_err++;
+          return NULL;
+        }
+
+        skb_reserve(skb, rx_headroom);
+
+        skb_put_data(skb, data, cqe_bcnt);
+
+        if (metasize)
+          skb_metadata_set(skb, metasize);
+
+        /* queue up for recycling/reuse */
+        skb_mark_for_recycle(skb);
+        frag_page->frags++;
+        if (skb) {
+
+          mlx5e_complete_rx_cqe(rq, cqe, cqe_bcnt, skb);
+
+          if (mlx5e_cqe_regb_chain(cqe))
+            if (!mlx5e_tc_update_skb_nic(cqe, skb)) {
+              dev_kfree_skb_any(skb);
+              return NULL;
+            }
+
+          napi_gro_receive(rq->cq.napi, skb);
         }
       }
     }
@@ -2182,16 +2196,6 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         }
       }
     xdp_clone_tx_exit:
-      // end_time = ktime_get();
-      // elapsed = ktime_sub(end_time, start_time);
-      // elapsed_ns = ktime_to_ns(elapsed);
-
-      // Only print if elapsed time is > 1 microsecond
-      // if (elapsed_ns > 1000) {
-      // trace_printk("mlx5e_skb_from_cqe_linear took %lld ns (%lld.%03lld
-      // µs)\n",
-      //              elapsed_ns, elapsed_ns / 1000, elapsed_ns % 1000);
-      // }
       return NULL;
     }
     case XDP_PASS:
