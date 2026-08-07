@@ -1,7 +1,0 @@
-[0;34m[INFO][0m  Original: queues=16  rx_ring=8192  tx_ring=8192  max_queues=
-[19:30:23] === 07_queue_scaling starting ===
-[env] Snapshot → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/07_queue_scaling/results/env.json
-[0;32m[ OK ][0m  Link enp52s0f1np1 is up
-[0;34m[INFO][0m  Checking peer reachability (192.168.101.2)...
-[0;31m[ERR ][0m  Peer 192.168.101.2 is unreachable — is it up?
-[0;32m[ OK ][0m  Queue/ring settings restored

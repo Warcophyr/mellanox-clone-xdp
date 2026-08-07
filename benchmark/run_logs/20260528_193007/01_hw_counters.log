@@ -1,6 +1,0 @@
-[19:30:07] === 01_hw_counters starting ===
-[19:30:07]   IFACE=enp52s0f1np1  PEER=192.168.101.2  DURATION=10s  PARALLEL=4
-[env] Snapshot → /mnt/shared_p2p/XDP_CLONE/mellanox-clone-xdp/benchmark/01_hw_counters/results/env.json
-[0;32m[ OK ][0m  Link enp52s0f1np1 is up
-[0;34m[INFO][0m  Checking peer reachability (192.168.101.2)...
-[0;31m[ERR ][0m  Peer 192.168.101.2 is unreachable — is it up?

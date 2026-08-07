@@ -1,3 +1,5 @@
+AGENT.md
+benchmark/
 benchmark/.benchmark/lib64
 benchmark/.benchmark/pyvenv.cfg
 benchmark/.benchmark/bin/activate
