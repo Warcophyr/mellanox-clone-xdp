@@ -1,3 +1,4 @@
+*.o
 AGENT.md
 benchmark/
 benchmark/.benchmark/lib64
