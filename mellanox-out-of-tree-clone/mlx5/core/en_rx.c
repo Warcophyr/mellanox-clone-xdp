@@ -54,6 +54,7 @@
 #include "en_accel/ipsec_rxtx.h"
 #include "en_accel/ktls_txrx.h"
 #include "en/xdp.h"
+#include "clone/clone_bpf.h"
 #include "en/xsk/rx.h"
 #include "en/health.h"
 #include "en/params.h"
@@ -1484,6 +1485,10 @@ csum_none:
 
 #define MLX5E_CE_BIT_MASK 0x80
 
+/* MLX5E_MAX_XDP_CLONES lives in clone/clone_bpf.h, together with the copy
+ * request the kfunc leaves behind.
+ */
+
 static inline void mlx5e_build_rx_skb(struct mlx5_cqe64 *cqe, u32 cqe_bcnt,
                                       struct mlx5e_rq *rq,
                                       struct sk_buff *skb) {
@@ -1778,13 +1783,27 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
     /* Original packets must start with no metadata visible to BPF. */
     mxbuf.xdp.data_meta = xdp->data;
     // start_time = ktime_get();
+    mlx5e_xdp_clone_req_reset();
     act = bpf_prog_run_xdp(prog, xdp);
 
     // printk("XDP action: %d\n", act);
     if (act > 4) {
       int __num_copy = act >> 5;
       int __xdp_clone = (act & 0x1F);
-      num_copy = __num_copy >= 0 ? __num_copy : 0;
+      struct mlx5e_xdp_clone_req __req = mlx5e_xdp_clone_req_get();
+
+      /* Two ways in. A request left by bpf_xdp_clone() wins, as long as the
+       * action returned is the one it was made for: it has been validated and
+       * clamped already. Otherwise the count comes from the upper bits of the
+       * action, XDP_CLONE_TX(n) style, and nothing has checked it, hence the
+       * clamp below.
+       */
+      if (__req.n_copies && __req.action == (u32)__xdp_clone)
+        num_copy = __req.n_copies;
+      else
+        num_copy = __num_copy >= 0 ? __num_copy : 0;
+
+      num_copy = min_t(int, num_copy, MLX5E_MAX_XDP_CLONES);
       act = __xdp_clone;
     }
 
@@ -1909,9 +1928,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
 
       if (goto_flag)
         goto xdp_clone_pass_exit;
-      struct page *page[num_copy];
-      void *copy_va[num_copy];
-      struct xdp_buff copy_xdp[num_copy];
+      struct page *page[MLX5E_MAX_XDP_CLONES];
+      void *copy_va[MLX5E_MAX_XDP_CLONES];
+      struct xdp_buff copy_xdp[MLX5E_MAX_XDP_CLONES];
 
       // start_time = ktime_get();
       for (int i = 0; i < num_copy; i++) {
@@ -1944,6 +1963,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         copy_xdp[i].data_meta = copy_xdp[i].data - sizeof(__num_copy);
         __builtin_memcpy(copy_xdp[i].data_meta, &__num_copy,
                          sizeof(__num_copy));
+        mlx5e_xdp_clone_req_reset();
         actcpy = bpf_prog_run_xdp(prog, &copy_xdp[i]);
         copy_xdp[i].data_meta = copy_xdp[i].data;
         if (actcpy > 4) {
@@ -2056,9 +2076,9 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
       cqe_bcnt = mxbuf.xdp.data_end - mxbuf.xdp.data;
       frag_size = MLX5_SKB_FRAG_SZ(rx_headroom + cqe_bcnt);
       struct sk_buff *skbcpy;
-      struct page *page[num_copy];
-      void *copy_va[num_copy];
-      struct xdp_buff copy_xdp[num_copy];
+      struct page *page[MLX5E_MAX_XDP_CLONES];
+      void *copy_va[MLX5E_MAX_XDP_CLONES];
+      struct xdp_buff copy_xdp[MLX5E_MAX_XDP_CLONES];
 
       // start_time = ktime_get();
 
@@ -2120,6 +2140,7 @@ static struct sk_buff *mlx5e_skb_from_cqe_linear(struct mlx5e_rq *rq,
         copy_xdp[i].data_meta = copy_xdp[i].data - sizeof(__num_copy);
         __builtin_memcpy(copy_xdp[i].data_meta, &__num_copy,
                          sizeof(__num_copy));
+        mlx5e_xdp_clone_req_reset();
         actcpy = bpf_prog_run_xdp(prog, &copy_xdp[i]);
         copy_xdp[i].data_meta = copy_xdp[i].data;
         if (actcpy > 4) {

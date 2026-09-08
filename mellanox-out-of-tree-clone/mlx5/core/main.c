@@ -74,6 +74,7 @@
 #include "mlx5_irq.h"
 #include "hwmon.h"
 #include "lag/lag.h"
+#include "clone/clone_bpf.h"
 
 MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
 MODULE_DESCRIPTION(
@@ -2214,22 +2215,26 @@ static int __init mlx5_init(void) {
   err = pci_register_driver(&mlx5_core_driver);
   if (err)
     goto err_pci;
-  // err = register_btf_kfunc_id_set(BPF_PROG_TYPE_XDP, &bpf_kfunc_example_set);
-  // if (err) {
-  //   pr_err("bpf_kfunc_example: Failed to register BTF kfunc ID set\n");
-  //   goto err_kfunc;
-  // }
-  printk(KERN_INFO "bpf_kfunc_example: Module loaded successfully\n");
+
+  /* kfunc used by XDP programs to ask for packet copies, see
+   * clone/clone_bpf.c. Needs CONFIG_DEBUG_INFO_BTF_MODULES=y.
+   */
+  err = mlx5e_clone_bpf_init();
+  if (err) {
+    pr_err("mlx5_core: failed to register the XDP clone kfunc set: %d\n", err);
+    goto err_kfunc;
+  }
 
   return 0;
 
+err_kfunc:
+  pci_unregister_driver(&mlx5_core_driver);
 err_pci:
   mlx5_sf_driver_unregister();
 err_sf:
   mlx5e_cleanup();
 err_debug:
   mlx5_unregister_debugfs();
-  // err_kfunc:
   return err;
 }
 
